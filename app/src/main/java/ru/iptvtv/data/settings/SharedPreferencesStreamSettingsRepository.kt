@@ -15,7 +15,7 @@ class SharedPreferencesStreamSettingsRepository(
         preferences.getString(STREAM_URL_KEY, "").orEmpty()
 
     override suspend fun saveStreamUrl(url: String) {
-        preferences.edit().putString(STREAM_URL_KEY, url).commit()
+        preferences.edit().putString(STREAM_URL_KEY, url).apply()
     }
 
     private companion object {

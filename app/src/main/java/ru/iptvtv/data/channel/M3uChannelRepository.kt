@@ -50,6 +50,7 @@ class M3uChannelRepository(
                         id = playlistUrl.hashCode().toString(),
                         name = "Мой канал",
                         streamUrl = playlistUrl,
+                        category = DEFAULT_CATEGORY,
                     ),
                 )
             }
@@ -66,6 +67,7 @@ class M3uChannelRepository(
     private fun readCache(playlistUrl: String): List<Channel>? = runCatching {
         if (!cacheFile.exists()) return null
         val root = JSONObject(cacheFile.readText())
+        if (root.optInt("version") != CACHE_VERSION) return null
         if (root.optString("source") != playlistUrl) return null
         val items = root.getJSONArray("channels")
         List(items.length()) { index ->
@@ -74,6 +76,7 @@ class M3uChannelRepository(
                 id = item.getString("id"),
                 name = item.getString("name"),
                 streamUrl = item.getString("url"),
+                category = item.optString("category").ifBlank { DEFAULT_CATEGORY },
             )
         }.takeIf { it.isNotEmpty() }
     }.getOrNull()
@@ -86,11 +89,13 @@ class M3uChannelRepository(
                     JSONObject()
                         .put("id", channel.id)
                         .put("name", channel.name)
-                        .put("url", channel.streamUrl),
+                        .put("url", channel.streamUrl)
+                        .put("category", channel.category),
                 )
             }
             cacheFile.writeText(
                 JSONObject()
+                    .put("version", CACHE_VERSION)
                     .put("source", playlistUrl)
                     .put("channels", items)
                     .toString(),
@@ -101,6 +106,7 @@ class M3uChannelRepository(
     private fun parseIptvPlaylist(content: String, playlistUrl: String): List<Channel> {
         val channels = mutableListOf<Channel>()
         var pendingName: String? = null
+        var pendingCategory = DEFAULT_CATEGORY
 
         content.lineSequence().forEach { rawLine ->
             val line = rawLine.trim()
@@ -110,6 +116,9 @@ class M3uChannelRepository(
                         .trim()
                         .ifBlank { extractAttribute(line, "tvg-name") }
                         .ifBlank { "Канал ${channels.size + 1}" }
+                    pendingCategory = extractAttribute(line, "group-title")
+                        .trim()
+                        .ifBlank { DEFAULT_CATEGORY }
                 }
                 line.isNotEmpty() && !line.startsWith("#") && pendingName != null -> {
                     val resolvedUrl = runCatching {
@@ -119,8 +128,10 @@ class M3uChannelRepository(
                         id = "${channels.size}-${resolvedUrl.hashCode()}",
                         name = pendingName.orEmpty(),
                         streamUrl = resolvedUrl,
+                        category = pendingCategory,
                     )
                     pendingName = null
+                    pendingCategory = DEFAULT_CATEGORY
                 }
             }
         }
@@ -136,6 +147,8 @@ class M3uChannelRepository(
 
     private companion object {
         const val CACHE_FILE_NAME = "playlist-cache.json"
-        const val USER_AGENT = "IPTV-TV/0.1 Android"
+        const val CACHE_VERSION = 2
+        const val DEFAULT_CATEGORY = "Без категории"
+        const val USER_AGENT = "IPTV-TV/0.2 Android"
     }
 }
