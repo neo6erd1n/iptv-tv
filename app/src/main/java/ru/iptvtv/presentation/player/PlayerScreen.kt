@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,6 +66,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.exoplayer.ExoPlayer
@@ -289,6 +293,7 @@ private fun SettingsDialog(
 @Composable
 private fun VideoPlayer(channel: Channel) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val player = remember {
         ExoPlayer.Builder(context).build().apply {
             playWhenReady = true
@@ -306,6 +311,20 @@ private fun VideoPlayer(channel: Channel) {
 
     DisposableEffect(Unit) {
         onDispose(player::release)
+    }
+
+    DisposableEffect(lifecycleOwner, player) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> player.play()
+                Lifecycle.Event.ON_STOP -> player.pause()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     AndroidView(
@@ -332,60 +351,52 @@ private fun ChannelPanel(
     onSelect: (Channel) -> Unit,
 ) {
     val categories = remember(channels) {
-        listOf("Все каналы") + channels.map(Channel::category).distinct()
+        listOf(
+            ChannelCategory(
+                name = "Все каналы",
+                channels = channels,
+            ),
+        ) + channels
+            .groupBy(Channel::category)
+            .map { (name, categoryChannels) ->
+                ChannelCategory(name = name, channels = categoryChannels)
+            }
     }
-    val initialCategoryIndex = categories.indexOf(selected?.category)
-        .coerceAtLeast(0)
-    var categoryIndex by remember(channels, selected?.id) {
+    val initialCategoryIndex = categories.indexOfFirst {
+        it.name == selected?.category
+    }.coerceAtLeast(0)
+    var panelLevel by remember { mutableStateOf(PanelLevel.CATEGORIES) }
+    var focusedCategoryIndex by remember {
         mutableIntStateOf(initialCategoryIndex)
     }
-    val visibleChannels = remember(channels, categoryIndex) {
-        if (categoryIndex == 0) {
-            channels
-        } else {
-            channels.filter { it.category == categories[categoryIndex] }
-        }
+    var activeCategoryIndex by remember {
+        mutableIntStateOf(initialCategoryIndex)
     }
-    val selectedIndex = visibleChannels.indexOfFirst { it.id == selected?.id }
-        .coerceAtLeast(0)
-    var focusedIndex by remember(visibleChannels, selected?.id) {
-        mutableIntStateOf(selectedIndex)
+    val visibleChannels = categories[activeCategoryIndex].channels
+    var focusedChannelIndex by remember(visibleChannels, selected?.id) {
+        mutableIntStateOf(
+            visibleChannels.indexOfFirst { it.id == selected?.id }.coerceAtLeast(0),
+        )
     }
     val panelFocus = remember { FocusRequester() }
-    val listState = rememberLazyListState(
-        initialFirstVisibleItemIndex = max(0, selectedIndex - 3),
+    val categoryListState = rememberLazyListState(
+        initialFirstVisibleItemIndex = max(0, initialCategoryIndex - 3),
     )
+    val channelListState = rememberLazyListState()
 
     LaunchedEffect(Unit) {
         panelFocus.requestFocus()
     }
 
-    LaunchedEffect(categoryIndex) {
-        focusedIndex = visibleChannels
-            .indexOfFirst { it.id == selected?.id }
-            .coerceAtLeast(0)
-        listState.scrollToItem(max(0, focusedIndex - 3))
+    LaunchedEffect(focusedCategoryIndex, panelLevel) {
+        if (panelLevel == PanelLevel.CATEGORIES) {
+            categoryListState.ensureItemVisible(focusedCategoryIndex)
+        }
     }
 
-    LaunchedEffect(focusedIndex) {
-        val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull {
-            it.index == focusedIndex
-        }
-        if (itemInfo == null) {
-            listState.scrollToItem(focusedIndex)
-        } else {
-            val viewportStart = listState.layoutInfo.viewportStartOffset
-            val viewportEnd = listState.layoutInfo.viewportEndOffset
-            val scrollDelta = when {
-                itemInfo.offset < viewportStart ->
-                    itemInfo.offset - viewportStart
-                itemInfo.offset + itemInfo.size > viewportEnd ->
-                    itemInfo.offset + itemInfo.size - viewportEnd
-                else -> 0
-            }
-            if (scrollDelta != 0) {
-                listState.animateScrollBy(scrollDelta.toFloat())
-            }
+    LaunchedEffect(focusedChannelIndex, panelLevel) {
+        if (panelLevel == PanelLevel.CHANNELS) {
+            channelListState.ensureItemVisible(focusedChannelIndex)
         }
     }
 
@@ -402,41 +413,54 @@ private fun ChannelPanel(
                 } else {
                     when (event.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_DPAD_UP -> {
-                            focusedIndex = max(0, focusedIndex - 1)
-                            true
-                        }
-                        KeyEvent.KEYCODE_DPAD_DOWN -> {
-                            focusedIndex = minOf(
-                                visibleChannels.lastIndex,
-                                focusedIndex + 1,
-                            )
-                            true
-                        }
-                        KeyEvent.KEYCODE_DPAD_LEFT -> {
-                            categoryIndex = if (categoryIndex == 0) {
-                                categories.lastIndex
+                            if (panelLevel == PanelLevel.CATEGORIES) {
+                                focusedCategoryIndex = max(0, focusedCategoryIndex - 1)
                             } else {
-                                categoryIndex - 1
+                                focusedChannelIndex = max(0, focusedChannelIndex - 1)
                             }
                             true
                         }
-                        KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                            categoryIndex = if (categoryIndex == categories.lastIndex) {
-                                0
+                        KeyEvent.KEYCODE_DPAD_DOWN -> {
+                            if (panelLevel == PanelLevel.CATEGORIES) {
+                                focusedCategoryIndex = minOf(
+                                    categories.lastIndex,
+                                    focusedCategoryIndex + 1,
+                                )
                             } else {
-                                categoryIndex + 1
+                                focusedChannelIndex = minOf(
+                                    visibleChannels.lastIndex,
+                                    focusedChannelIndex + 1,
+                                )
                             }
                             true
                         }
                         KeyEvent.KEYCODE_DPAD_CENTER,
                         KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_DPAD_RIGHT,
                         -> {
-                            visibleChannels.getOrNull(focusedIndex)?.let(onSelect)
+                            if (panelLevel == PanelLevel.CATEGORIES) {
+                                activeCategoryIndex = focusedCategoryIndex
+                                val categoryChannels =
+                                    categories[activeCategoryIndex].channels
+                                focusedChannelIndex = categoryChannels
+                                    .indexOfFirst { it.id == selected?.id }
+                                    .coerceAtLeast(0)
+                                panelLevel = PanelLevel.CHANNELS
+                            } else {
+                                visibleChannels
+                                    .getOrNull(focusedChannelIndex)
+                                    ?.let(onSelect)
+                            }
                             true
                         }
+                        KeyEvent.KEYCODE_DPAD_LEFT,
                         KeyEvent.KEYCODE_BACK,
                         -> {
-                            onDismiss()
+                            if (panelLevel == PanelLevel.CHANNELS) {
+                                panelLevel = PanelLevel.CATEGORIES
+                            } else {
+                                onDismiss()
+                            }
                             true
                         }
                         else -> false
@@ -460,53 +484,62 @@ private fun ChannelPanel(
                 )
                 Spacer(Modifier.width(12.dp))
                 Column {
-                    Text("Каналы", fontSize = 24.sp)
                     Text(
-                        "${visibleChannels.size} из ${channels.size}",
+                        if (panelLevel == PanelLevel.CATEGORIES) {
+                            "Категории"
+                        } else {
+                            categories[activeCategoryIndex].name
+                        },
+                        fontSize = 24.sp,
+                        maxLines = 1,
+                    )
+                    Text(
+                        if (panelLevel == PanelLevel.CATEGORIES) {
+                            "${categories.size} доступно"
+                        } else {
+                            "${visibleChannels.size} каналов"
+                        },
                         color = Color.White.copy(alpha = 0.58f),
                         fontSize = 13.sp,
                     )
                 }
             }
-            Spacer(Modifier.height(14.dp))
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                contentColor = MaterialTheme.colorScheme.primary,
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+            Spacer(Modifier.height(18.dp))
+            if (panelLevel == PanelLevel.CATEGORIES) {
+                LazyColumn(
+                    state = categoryListState,
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("‹", fontSize = 20.sp)
-                    Text(
-                        categories[categoryIndex],
-                        modifier = Modifier.weight(1f),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        maxLines = 1,
-                    )
-                    Text("›", fontSize = 20.sp)
+                    itemsIndexed(
+                        categories,
+                        key = { index, category -> "$index-${category.name}" },
+                    ) { index, category ->
+                        PanelListItem(
+                            name = category.name,
+                            detail = "${category.channels.size}",
+                            selected = index == initialCategoryIndex,
+                            focused = index == focusedCategoryIndex,
+                            showChevron = true,
+                        )
+                    }
                 }
-            }
-            Spacer(Modifier.height(8.dp))
-            LazyColumn(
-                state = listState,
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                itemsIndexed(
-                    visibleChannels,
-                    key = { _, channel -> channel.id },
-                ) { index, channel ->
-                    ChannelItem(
-                        channel = channel,
-                        selected = channel.id == selected?.id,
-                        focused = index == focusedIndex,
-                    )
+            } else {
+                LazyColumn(
+                    state = channelListState,
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    itemsIndexed(
+                        visibleChannels,
+                        key = { _, channel -> channel.id },
+                    ) { index, channel ->
+                        PanelListItem(
+                            name = channel.name,
+                            selected = channel.id == selected?.id,
+                            focused = index == focusedChannelIndex,
+                        )
+                    }
                 }
             }
         }
@@ -514,10 +547,12 @@ private fun ChannelPanel(
 }
 
 @Composable
-private fun ChannelItem(
-    channel: Channel,
+private fun PanelListItem(
+    name: String,
+    detail: String? = null,
     selected: Boolean,
     focused: Boolean,
+    showChevron: Boolean = false,
 ) {
     val shape = RoundedCornerShape(18.dp)
     val background = when {
@@ -549,9 +584,53 @@ private fun ChannelItem(
                 ),
         )
         Spacer(Modifier.width(16.dp))
-        Text(channel.name, color = Color.White, fontSize = 17.sp)
+        Text(
+            name,
+            modifier = Modifier.weight(1f),
+            color = Color.White,
+            fontSize = 17.sp,
+            maxLines = 1,
+        )
+        detail?.let {
+            Text(
+                it,
+                color = Color.White.copy(alpha = 0.55f),
+                fontSize = 14.sp,
+            )
+        }
+        if (showChevron) {
+            Spacer(Modifier.width(10.dp))
+            Text("›", color = MaterialTheme.colorScheme.primary, fontSize = 22.sp)
+        }
     }
 }
+
+private suspend fun LazyListState.ensureItemVisible(index: Int) {
+    if (index < 0) return
+    val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
+    if (itemInfo == null) {
+        scrollToItem(index)
+        return
+    }
+    val scrollDelta = when {
+        itemInfo.offset < layoutInfo.viewportStartOffset ->
+            itemInfo.offset - layoutInfo.viewportStartOffset
+        itemInfo.offset + itemInfo.size > layoutInfo.viewportEndOffset ->
+            itemInfo.offset + itemInfo.size - layoutInfo.viewportEndOffset
+        else -> 0
+    }
+    if (scrollDelta != 0) animateScrollBy(scrollDelta.toFloat())
+}
+
+private enum class PanelLevel {
+    CATEGORIES,
+    CHANNELS,
+}
+
+private data class ChannelCategory(
+    val name: String,
+    val channels: List<Channel>,
+)
 
 @Composable
 private fun UpdateDialog(

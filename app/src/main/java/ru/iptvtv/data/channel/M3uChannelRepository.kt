@@ -120,6 +120,12 @@ class M3uChannelRepository(
                         .trim()
                         .ifBlank { DEFAULT_CATEGORY }
                 }
+                line.startsWith("#EXTGRP:", ignoreCase = true) &&
+                    pendingName != null -> {
+                    pendingCategory = line.substringAfter(':')
+                        .trim()
+                        .ifBlank { DEFAULT_CATEGORY }
+                }
                 line.isNotEmpty() && !line.startsWith("#") && pendingName != null -> {
                     val resolvedUrl = runCatching {
                         URI(playlistUrl).resolve(line).toString()
@@ -138,16 +144,17 @@ class M3uChannelRepository(
         return channels
     }
 
-    private fun extractAttribute(line: String, name: String): String =
-        Regex("""$name="([^"]*)"""", RegexOption.IGNORE_CASE)
-            .find(line)
-            ?.groupValues
-            ?.getOrNull(1)
-            .orEmpty()
+    private fun extractAttribute(line: String, name: String): String {
+        val match = Regex(
+            """(?:^|\s)${Regex.escape(name)}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^,\s]+))""",
+            RegexOption.IGNORE_CASE,
+        ).find(line) ?: return ""
+        return match.groupValues.drop(1).firstOrNull(String::isNotBlank).orEmpty()
+    }
 
     private companion object {
         const val CACHE_FILE_NAME = "playlist-cache.json"
-        const val CACHE_VERSION = 2
+        const val CACHE_VERSION = 3
         const val DEFAULT_CATEGORY = "Без категории"
         const val USER_AGENT = "IPTV-TV/0.2 Android"
     }
