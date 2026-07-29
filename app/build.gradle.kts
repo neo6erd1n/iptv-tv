@@ -16,7 +16,11 @@ android {
         versionName = "0.1.0"
 
         // Заполните после создания репозитория: "owner/repository".
-        buildConfigField("String", "GITHUB_REPOSITORY", "\"\"")
+        buildConfigField(
+    "String",
+    "GITHUB_REPOSITORY",
+    "\"neo6erd1n/iptv-tv\"",
+)
     }
 
     val keystorePath = System.getenv("IPTV_KEYSTORE_PATH")
