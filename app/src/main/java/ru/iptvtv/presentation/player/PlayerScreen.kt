@@ -25,7 +25,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.LiveTv
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -44,6 +46,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -51,7 +54,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.text.input.KeyboardType
@@ -67,11 +69,12 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import ru.iptvtv.domain.model.AppUpdate
 import ru.iptvtv.domain.model.Channel
+import kotlin.math.max
 
 @Composable
 fun PlayerScreen(
     viewModel: PlayerViewModel,
-    onOpenUpdate: (String) -> Unit,
+    onDownloadUpdate: (AppUpdate) -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
@@ -111,7 +114,11 @@ fun PlayerScreen(
     ) {
         state.selectedChannel?.let { channel ->
             VideoPlayer(channel = channel)
-        } ?: EmptyPlayerState(onOpenSettings = viewModel::showSettings)
+        } ?: EmptyPlayerState(
+            isLoading = state.isPlaylistLoading,
+            error = state.playlistError,
+            onOpenSettings = viewModel::showSettings,
+        )
 
         AnimatedVisibility(
             visible = state.isChannelPanelVisible,
@@ -121,6 +128,7 @@ fun PlayerScreen(
             ChannelPanel(
                 channels = state.channels,
                 selected = state.selectedChannel,
+                onDismiss = viewModel::hideChannels,
                 onSelect = viewModel::selectChannel,
             )
         }
@@ -140,14 +148,18 @@ fun PlayerScreen(
             onDismiss = viewModel::dismissUpdate,
             onDownload = {
                 viewModel.dismissUpdate()
-                onOpenUpdate(update.downloadUrl)
+                onDownloadUpdate(update)
             },
         )
     }
 }
 
 @Composable
-private fun EmptyPlayerState(onOpenSettings: () -> Unit) {
+private fun EmptyPlayerState(
+    isLoading: Boolean,
+    error: String?,
+    onOpenSettings: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -155,23 +167,40 @@ private fun EmptyPlayerState(onOpenSettings: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(
-            imageVector = Icons.Rounded.LiveTv,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-        )
+        if (isLoading) {
+            CircularProgressIndicator()
+        } else {
+            Icon(
+                imageVector = Icons.Rounded.LiveTv,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
         Spacer(Modifier.height(16.dp))
-        Text("Добавьте ссылку на видеопоток", fontSize = 24.sp)
+        Text(
+            when {
+                isLoading -> "Загружаем список каналов…"
+                error != null -> "Не удалось загрузить каналы"
+                else -> "Добавьте ссылку на IPTV-плейлист"
+            },
+            fontSize = 24.sp,
+        )
         Spacer(Modifier.height(8.dp))
         Text(
-            "Нажмите Menu на пульте или откройте настройки",
+            error ?: if (isLoading) {
+                "Это может занять несколько секунд"
+            } else {
+                "Нажмите Menu на пульте или откройте настройки"
+            },
             color = Color.White.copy(alpha = 0.62f),
         )
-        Spacer(Modifier.height(24.dp))
-        Button(onClick = onOpenSettings) {
-            Icon(Icons.Rounded.Settings, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Настройки")
+        if (!isLoading) {
+            Spacer(Modifier.height(24.dp))
+            Button(onClick = onOpenSettings) {
+                Icon(Icons.Rounded.Settings, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (error == null) "Настройки" else "Проверить ссылку")
+            }
         }
     }
 }
@@ -205,7 +234,7 @@ private fun SettingsDialog(
                 tint = MaterialTheme.colorScheme.primary,
             )
         },
-        title = { Text("Настройки видеопотока") },
+        title = { Text("Настройки IPTV") },
         text = {
             Column {
                 Text(
@@ -222,8 +251,8 @@ private fun SettingsDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .focusRequester(inputFocus),
-                    label = { Text("Ссылка на HLS-поток") },
-                    placeholder = { Text("https://…/playlist.m3u8") },
+                    label = { Text("Ссылка на M3U-плейлист") },
+                    placeholder = { Text("https://…/playlist.m3u") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     isError = showError,
@@ -231,7 +260,7 @@ private fun SettingsDialog(
                         if (showError) {
                             Text("Ссылка должна начинаться с http:// или https://")
                         } else {
-                            Text("Поддерживается HLS/M3U8")
+                            Text("Поддерживаются IPTV M3U и прямые HLS/M3U8")
                         }
                     },
                 )
@@ -296,12 +325,30 @@ private fun VideoPlayer(channel: Channel) {
 private fun ChannelPanel(
     channels: List<Channel>,
     selected: Channel?,
+    onDismiss: () -> Unit,
     onSelect: (Channel) -> Unit,
 ) {
-    val firstItemFocus = remember { FocusRequester() }
+    val selectedIndex = channels.indexOfFirst { it.id == selected?.id }
+        .coerceAtLeast(0)
+    var focusedIndex by remember(channels, selected?.id) {
+        mutableIntStateOf(selectedIndex)
+    }
+    val panelFocus = remember { FocusRequester() }
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = max(0, selectedIndex - 3),
+    )
 
     LaunchedEffect(Unit) {
-        firstItemFocus.requestFocus()
+        panelFocus.requestFocus()
+    }
+
+    LaunchedEffect(focusedIndex) {
+        val isVisible = listState.layoutInfo.visibleItemsInfo.any {
+            it.index == focusedIndex
+        }
+        if (!isVisible) {
+            listState.scrollToItem(max(0, focusedIndex - 3))
+        }
     }
 
     Surface(
@@ -309,8 +356,40 @@ private fun ChannelPanel(
             .padding(24.dp)
             .width(360.dp)
             .fillMaxHeight()
-            .clip(RoundedCornerShape(28.dp)),
+            .clip(RoundedCornerShape(28.dp))
+            .focusRequester(panelFocus)
+            .onPreviewKeyEvent { event ->
+                if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) {
+                    false
+                } else {
+                    when (event.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_DPAD_UP -> {
+                            focusedIndex = max(0, focusedIndex - 1)
+                            true
+                        }
+                        KeyEvent.KEYCODE_DPAD_DOWN -> {
+                            focusedIndex = minOf(channels.lastIndex, focusedIndex + 1)
+                            true
+                        }
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        -> {
+                            channels.getOrNull(focusedIndex)?.let(onSelect)
+                            true
+                        }
+                        KeyEvent.KEYCODE_DPAD_RIGHT,
+                        KeyEvent.KEYCODE_BACK,
+                        -> {
+                            onDismiss()
+                            true
+                        }
+                        else -> false
+                    }
+                }
+            }
+            .focusable(),
         color = Color(0xD9141B2A),
+        contentColor = Color.White,
         shadowElevation = 18.dp,
     ) {
         Column(modifier = Modifier.padding(top = 28.dp)) {
@@ -335,19 +414,15 @@ private fun ChannelPanel(
             }
             Spacer(Modifier.height(22.dp))
             LazyColumn(
+                state = listState,
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(channels, key = Channel::id) { channel ->
+                itemsIndexed(channels, key = { _, channel -> channel.id }) { index, channel ->
                     ChannelItem(
                         channel = channel,
                         selected = channel.id == selected?.id,
-                        modifier = if (channel == channels.firstOrNull()) {
-                            Modifier.focusRequester(firstItemFocus)
-                        } else {
-                            Modifier
-                        },
-                        onClick = { onSelect(channel) },
+                        focused = index == focusedIndex,
                     )
                 }
             }
@@ -359,10 +434,8 @@ private fun ChannelPanel(
 private fun ChannelItem(
     channel: Channel,
     selected: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
+    focused: Boolean,
 ) {
-    var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(18.dp)
     val background = when {
         focused -> Color.White.copy(alpha = 0.18f)
@@ -371,7 +444,7 @@ private fun ChannelItem(
     }
 
     Row(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxWidth()
             .height(68.dp)
             .clip(shape)
@@ -380,20 +453,6 @@ private fun ChannelItem(
                 if (focused) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape)
                 else Modifier,
             )
-            .onFocusChanged { focused = it.isFocused }
-            .onPreviewKeyEvent { event ->
-                if (
-                    event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
-                    (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
-                        event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER)
-                ) {
-                    onClick()
-                    true
-                } else {
-                    false
-                }
-            }
-            .focusable()
             .padding(horizontal = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -407,7 +466,7 @@ private fun ChannelItem(
                 ),
         )
         Spacer(Modifier.width(16.dp))
-        Text(channel.name, fontSize = 17.sp)
+        Text(channel.name, color = Color.White, fontSize = 17.sp)
     }
 }
 

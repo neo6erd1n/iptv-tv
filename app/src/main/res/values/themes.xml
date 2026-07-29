@@ -2,6 +2,8 @@
     <style name="Theme.IptvTv" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowFullscreen">true</item>
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:windowDisablePreview">true</item>
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:colorAccent">#7DD3FC</item>
         <item name="android:navigationBarColor">#000000</item>

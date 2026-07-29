@@ -9,12 +9,14 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import ru.iptvtv.domain.model.Channel
 import ru.iptvtv.domain.usecase.CheckForUpdateUseCase
+import ru.iptvtv.domain.usecase.GetChannelsUseCase
 import ru.iptvtv.domain.usecase.GetStreamUrlUseCase
 import ru.iptvtv.domain.usecase.SaveStreamUrlUseCase
 
 class PlayerViewModel(
     private val getStreamUrl: GetStreamUrlUseCase,
     private val saveStreamUrl: SaveStreamUrlUseCase,
+    private val getChannels: GetChannelsUseCase,
     private val checkForUpdate: CheckForUpdateUseCase,
     private val currentVersion: String,
 ) : ViewModel() {
@@ -23,7 +25,7 @@ class PlayerViewModel(
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
-            applyStreamUrl(getStreamUrl())
+            loadPlaylist(getStreamUrl())
         }
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { checkForUpdate(currentVersion) }
@@ -45,7 +47,7 @@ class PlayerViewModel(
         val normalizedUrl = url.trim()
         viewModelScope.launch(Dispatchers.IO) {
             saveStreamUrl(normalizedUrl)
-            applyStreamUrl(normalizedUrl)
+            loadPlaylist(normalizedUrl)
         }
         hideSettings()
     }
@@ -56,16 +58,47 @@ class PlayerViewModel(
         }
     }
 
-    private fun applyStreamUrl(url: String) {
-        val channel = url.takeIf(String::isNotBlank)?.let {
-            Channel(id = "user-stream", name = "Мой канал", streamUrl = it)
+    private suspend fun loadPlaylist(url: String) {
+        if (url.isBlank()) {
+            _uiState.update {
+                it.copy(
+                    streamUrl = "",
+                    channels = emptyList(),
+                    selectedChannel = null,
+                    isPlaylistLoading = false,
+                    playlistError = null,
+                )
+            }
+            return
         }
+
         _uiState.update {
             it.copy(
                 streamUrl = url,
-                channels = listOfNotNull(channel),
-                selectedChannel = channel,
+                channels = emptyList(),
+                selectedChannel = null,
+                isPlaylistLoading = true,
+                playlistError = null,
             )
         }
+
+        runCatching { getChannels(url) }
+            .onSuccess { channels ->
+                _uiState.update {
+                    it.copy(
+                        channels = channels,
+                        selectedChannel = channels.firstOrNull(),
+                        isPlaylistLoading = false,
+                    )
+                }
+            }
+            .onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isPlaylistLoading = false,
+                        playlistError = error.message ?: "Не удалось загрузить плейлист",
+                    )
+                }
+            }
     }
 }
