@@ -175,7 +175,11 @@ class PlayerViewModel(
         } else {
             template
         }
-        return resolved
+        return resolved.trim().takeIf {
+            (it.startsWith("http://", true) || it.startsWith("https://", true)) &&
+                !it.contains('{') &&
+                !it.contains('}')
+        }
     }
 
     private suspend fun loadPlaylist(url: String, epgUrl: String) {
@@ -209,7 +213,8 @@ class PlayerViewModel(
                 _uiState.update {
                     it.copy(
                         channels = channels,
-                        selectedChannel = channels.firstOrNull(),
+                        selectedChannel = null,
+                        isChannelPanelVisible = true,
                         isPlaylistLoading = false,
                     )
                 }

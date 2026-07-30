@@ -127,12 +127,19 @@ fun PlayerScreen(
                             true
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
-                            viewModel.showChannels()
-                            true
+                            if (state.isChannelPanelVisible) {
+                                false
+                            } else {
+                                viewModel.showChannels()
+                                true
+                            }
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                            viewModel.hideChannels()
-                            true
+                            if (state.isChannelPanelVisible) {
+                                false
+                            } else {
+                                true
+                            }
                         }
                         else -> false
                     }
@@ -145,6 +152,11 @@ fun PlayerScreen(
             isLoading = state.isPlaylistLoading,
             error = state.playlistError,
             onOpenSettings = viewModel::showSettings,
+        )
+        DeviceClock(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 24.dp, end = 32.dp),
         )
 
         AnimatedVisibility(
@@ -391,11 +403,13 @@ private fun VideoPlayer(channel: Channel) {
     }
 
     LaunchedEffect(channel.streamUrl) {
-        val item = MediaItem.Builder()
-            .setUri(channel.streamUrl)
-            .build()
-        player.setMediaItem(item)
-        player.prepare()
+        runCatching {
+            val item = MediaItem.Builder()
+                .setUri(channel.streamUrl)
+                .build()
+            player.setMediaItem(item)
+            player.prepare()
+        }
     }
 
     DisposableEffect(Unit) {
@@ -429,6 +443,26 @@ private fun VideoPlayer(channel: Channel) {
                 this.player = player
             }
         },
+    )
+}
+
+@Composable
+private fun DeviceClock(modifier: Modifier = Modifier) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(1_000)
+        }
+    }
+    Text(
+        text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(now)),
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black.copy(alpha = 0.52f))
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        color = Color.White,
+        fontSize = 20.sp,
     )
 }
 
