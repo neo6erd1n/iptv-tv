@@ -7,5 +7,8 @@ interface ChannelRepository {
     suspend fun loadCurrentPrograms(
         channels: List<Channel>,
         epgUrl: String,
+        forceRefresh: Boolean = false,
     ): List<Channel>
+    suspend fun getLastEpgUpdateAt(epgUrl: String): Long?
+    suspend fun shouldRefreshEpg(epgUrl: String): Boolean
 }

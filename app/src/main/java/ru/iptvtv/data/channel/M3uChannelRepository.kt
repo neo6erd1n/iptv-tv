@@ -20,6 +20,7 @@ class M3uChannelRepository(
     context: Context,
 ) : ChannelRepository {
     private val cacheFile = File(context.filesDir, CACHE_FILE_NAME)
+    private val epgCacheFile = File(context.filesDir, EPG_CACHE_FILE_NAME)
 
     override suspend fun getChannels(playlistUrl: String, epgUrl: String): List<Channel> {
         readCache(playlistUrl, epgUrl)?.let { return it }
@@ -76,22 +77,37 @@ class M3uChannelRepository(
     override suspend fun loadCurrentPrograms(
         channels: List<Channel>,
         epgUrl: String,
+        forceRefresh: Boolean,
     ): List<Channel> {
         if (epgUrl.isBlank()) return channels
-        val programs = loadCurrentPrograms(
-            epgUrl.split(',').map(String::trim).filter(String::isNotBlank),
-        )
+        val schedule = if (forceRefresh) {
+            loadEpgSchedule(
+                epgUrl.split(',').map(String::trim).filter(String::isNotBlank),
+            ).restrictTo(channels).also { writeEpgCache(epgUrl, it) }
+        } else {
+            readEpgCache(epgUrl)?.second ?: return channels
+        }
+        val now = System.currentTimeMillis()
         return channels.map { channel ->
-            val program = programs[channel.epgId]
-                ?: programs[normalizeEpgKey(channel.epgId)]
-                ?: programs[channel.name]
-                ?: programs[normalizeEpgKey(channel.name)]
+            val channelKey = normalizeEpgKey(channel.epgId.ifBlank { channel.name })
+            val resolvedId = schedule.aliases[channelKey] ?: channelKey
+            val program = schedule.programs.firstOrNull {
+                normalizeEpgKey(it.channelId) == resolvedId && now in it.start until it.end
+            }
             channel.copy(
                 currentProgram = program?.title,
                 currentProgramStart = program?.start,
                 currentProgramEnd = program?.end,
             )
         }
+    }
+
+    override suspend fun getLastEpgUpdateAt(epgUrl: String): Long? =
+        readEpgCache(epgUrl)?.first
+
+    override suspend fun shouldRefreshEpg(epgUrl: String): Boolean {
+        val updatedAt = getLastEpgUpdateAt(epgUrl) ?: return true
+        return System.currentTimeMillis() - updatedAt >= EPG_REFRESH_INTERVAL_MS
     }
 
     private fun readCache(playlistUrl: String, epgUrl: String): List<Channel>? = runCatching {
@@ -205,17 +221,19 @@ class M3uChannelRepository(
         return ParsedPlaylist(channels, epgUrls.toList())
     }
 
-    private fun loadCurrentPrograms(epgUrls: List<String>): Map<String, ProgramInfo> {
-        if (epgUrls.isEmpty()) return emptyMap()
-        val result = mutableMapOf<String, ProgramInfo>()
+    private fun loadEpgSchedule(epgUrls: List<String>): EpgSchedule {
+        val programs = mutableListOf<ScheduledProgram>()
+        val aliases = mutableMapOf<String, String>()
         epgUrls.forEach { epgUrl ->
-            runCatching { readCurrentPrograms(epgUrl) }
-                .onSuccess { result.putAll(it) }
+            val schedule = readEpgSchedule(epgUrl)
+            programs += schedule.programs
+            aliases += schedule.aliases
         }
-        return result
+        if (programs.isEmpty()) error("В EPG не найдено программ")
+        return EpgSchedule(programs, aliases)
     }
 
-    private fun readCurrentPrograms(epgUrl: String): Map<String, ProgramInfo> {
+    private fun readEpgSchedule(epgUrl: String): EpgSchedule {
         val connection = URL(epgUrl).openConnection() as HttpURLConnection
         return try {
             connection.connectTimeout = 12_000
@@ -223,7 +241,9 @@ class M3uChannelRepository(
             connection.instanceFollowRedirects = true
             connection.setRequestProperty("User-Agent", USER_AGENT)
             connection.setRequestProperty("Accept-Encoding", "gzip")
-            if (connection.responseCode !in 200..299) return emptyMap()
+            if (connection.responseCode !in 200..299) {
+                error("EPG-сервер вернул код ${connection.responseCode}")
+            }
 
             val rawInput = PushbackInputStream(connection.inputStream.buffered(), 2)
             val signature = ByteArray(2)
@@ -244,18 +264,18 @@ class M3uChannelRepository(
             input.use { stream ->
                 val parser = XmlPullParserFactory.newInstance().newPullParser()
                 parser.setInput(stream, null)
-                parseCurrentPrograms(parser, System.currentTimeMillis())
+                parseEpgSchedule(parser, System.currentTimeMillis())
             }
         } finally {
             connection.disconnect()
         }
     }
 
-    private fun parseCurrentPrograms(
+    private fun parseEpgSchedule(
         parser: XmlPullParser,
         now: Long,
-    ): Map<String, ProgramInfo> {
-        val programs = mutableMapOf<String, ProgramInfo>()
+    ): EpgSchedule {
+        val programs = mutableListOf<ScheduledProgram>()
         val channelNames = mutableMapOf<String, MutableList<String>>()
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
@@ -287,24 +307,68 @@ class M3uChannelRepository(
                     title?.isNotBlank() == true &&
                     start != null &&
                     stop != null &&
-                    now in start until stop
+                    stop > now &&
+                    start < now + EPG_SCHEDULE_WINDOW_MS
                 ) {
-                    val program = ProgramInfo(title, start, stop)
-                    programs[channelId] = program
-                    programs[normalizeEpgKey(channelId)] = program
+                    programs += ScheduledProgram(channelId, title, start, stop)
                 }
             }
             event = parser.next()
         }
-        channelNames.forEach { (channelId, names) ->
-            programs[channelId]?.let { program ->
-                names.forEach { name ->
-                    programs[name] = program
-                    programs[normalizeEpgKey(name)] = program
-                }
+        val aliases = mutableMapOf<String, String>()
+        programs.map(ScheduledProgram::channelId).distinct().forEach { channelId ->
+            aliases[normalizeEpgKey(channelId)] = normalizeEpgKey(channelId)
+            channelNames[channelId].orEmpty().forEach { name ->
+                aliases[normalizeEpgKey(name)] = normalizeEpgKey(channelId)
             }
         }
-        return programs
+        return EpgSchedule(programs, aliases)
+    }
+
+    private fun readEpgCache(epgUrl: String): Pair<Long, EpgSchedule>? = runCatching {
+        if (!epgCacheFile.exists()) return null
+        val root = JSONObject(epgCacheFile.readText())
+        if (root.optInt("version") != EPG_CACHE_VERSION) return null
+        if (root.optString("source") != epgUrl) return null
+        val updatedAt = root.optLong("updatedAt").takeIf { it > 0L } ?: return null
+        val programItems = root.getJSONArray("programs")
+        val programs = List(programItems.length()) { index ->
+            val item = programItems.getJSONObject(index)
+            ScheduledProgram(
+                channelId = item.getString("channel"),
+                title = item.getString("title"),
+                start = item.getLong("start"),
+                end = item.getLong("end"),
+            )
+        }
+        val aliasItems = root.getJSONObject("aliases")
+        val aliases = aliasItems.keys().asSequence().associateWith(aliasItems::getString)
+        updatedAt to EpgSchedule(programs, aliases)
+    }.getOrNull()
+
+    private fun writeEpgCache(epgUrl: String, schedule: EpgSchedule) {
+        val programs = JSONArray()
+        schedule.programs.forEach { program ->
+            programs.put(
+                JSONObject()
+                    .put("channel", program.channelId)
+                    .put("title", program.title)
+                    .put("start", program.start)
+                    .put("end", program.end),
+            )
+        }
+        val aliases = JSONObject()
+        schedule.aliases.forEach(aliases::put)
+        val completedAt = System.currentTimeMillis()
+        epgCacheFile.writeText(
+            JSONObject()
+                .put("version", EPG_CACHE_VERSION)
+                .put("source", epgUrl)
+                .put("updatedAt", completedAt)
+                .put("programs", programs)
+                .put("aliases", aliases)
+                .toString(),
+        )
     }
 
     private fun parseXmlTvTime(value: String?): Long? {
@@ -327,6 +391,17 @@ class M3uChannelRepository(
         .lowercase(Locale.ROOT)
         .filter(Char::isLetterOrDigit)
 
+    private fun EpgSchedule.restrictTo(channels: List<Channel>): EpgSchedule {
+        val wantedIds = channels.map { channel ->
+            val key = normalizeEpgKey(channel.epgId.ifBlank { channel.name })
+            aliases[key] ?: key
+        }.toSet()
+        return copy(
+            programs = programs.filter { normalizeEpgKey(it.channelId) in wantedIds },
+            aliases = aliases.filterValues { it in wantedIds },
+        )
+    }
+
     private fun extractAttribute(line: String, name: String): String {
         val match = Regex(
             """(?:^|\s)${Regex.escape(name)}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^,\s]+))""",
@@ -337,8 +412,12 @@ class M3uChannelRepository(
 
     private companion object {
         const val CACHE_FILE_NAME = "playlist-cache.json"
+        const val EPG_CACHE_FILE_NAME = "epg-cache.json"
         const val CACHE_VERSION = 5
+        const val EPG_CACHE_VERSION = 1
         const val CACHE_TTL_MS = 5 * 60 * 1_000L
+        const val EPG_REFRESH_INTERVAL_MS = 12L * 60 * 60 * 1_000
+        const val EPG_SCHEDULE_WINDOW_MS = 36L * 60 * 60 * 1_000
         const val DEFAULT_CATEGORY = "Без категории"
         const val USER_AGENT = "IPTV-TV/0.2 Android"
     }
@@ -353,9 +432,15 @@ class M3uChannelRepository(
         val epgUrls: List<String>,
     )
 
-    private data class ProgramInfo(
+    private data class ScheduledProgram(
+        val channelId: String,
         val title: String,
         val start: Long,
         val end: Long,
+    )
+
+    private data class EpgSchedule(
+        val programs: List<ScheduledProgram>,
+        val aliases: Map<String, String>,
     )
 }

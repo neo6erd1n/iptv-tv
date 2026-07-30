@@ -14,7 +14,6 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -79,6 +79,9 @@ import androidx.media3.ui.PlayerView
 import ru.iptvtv.domain.model.AppUpdate
 import ru.iptvtv.domain.model.Channel
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.max
 
 @Composable
@@ -138,6 +141,7 @@ fun PlayerScreen(
             ChannelPanel(
                 channels = state.channels,
                 selected = state.selectedChannel,
+                isEpgUpdating = state.isEpgUpdating,
                 onDismiss = viewModel::hideChannels,
                 onSelect = viewModel::selectChannel,
             )
@@ -148,8 +152,11 @@ fun PlayerScreen(
         SettingsDialog(
             initialUrl = state.streamUrl,
             initialEpgUrl = state.epgUrl,
+            isEpgUpdating = state.isEpgUpdating,
+            lastEpgUpdateAt = state.lastEpgUpdateAt,
             onDismiss = viewModel::hideSettings,
             onSave = viewModel::saveSettings,
+            onRefreshEpg = viewModel::refreshEpgNow,
         )
     }
 
@@ -220,8 +227,11 @@ private fun EmptyPlayerState(
 private fun SettingsDialog(
     initialUrl: String,
     initialEpgUrl: String,
+    isEpgUpdating: Boolean,
+    lastEpgUpdateAt: Long?,
     onDismiss: () -> Unit,
     onSave: (String, String) -> Unit,
+    onRefreshEpg: () -> Unit,
 ) {
     var url by remember(initialUrl) { mutableStateOf(initialUrl) }
     var epgUrl by remember(initialEpgUrl) { mutableStateOf(initialEpgUrl) }
@@ -304,6 +314,27 @@ private fun SettingsDialog(
                         }
                     },
                 )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        lastEpgUpdateAt?.let {
+                            "Обновлено: ${formatEpgUpdateTime(it)}"
+                        } ?: "EPG ещё не обновлялся",
+                        color = Color.White.copy(alpha = 0.58f),
+                        fontSize = 12.sp,
+                    )
+                    TextButton(
+                        onClick = onRefreshEpg,
+                        enabled = !isEpgUpdating && epgUrl.isNotBlank(),
+                    ) {
+                        Icon(Icons.Rounded.Sync, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (isEpgUpdating) "Обновляется…" else "Обновить сейчас")
+                    }
+                }
             }
         },
         confirmButton = {
@@ -382,6 +413,7 @@ private fun VideoPlayer(channel: Channel) {
 private fun ChannelPanel(
     channels: List<Channel>,
     selected: Channel?,
+    isEpgUpdating: Boolean,
     onDismiss: () -> Unit,
     onSelect: (Channel) -> Unit,
 ) {
@@ -456,23 +488,31 @@ private fun ChannelPanel(
                     when (event.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_DPAD_UP -> {
                             if (panelLevel == PanelLevel.CATEGORIES) {
-                                focusedCategoryIndex = max(0, focusedCategoryIndex - 1)
+                                if (!categoryListState.isScrollInProgress) {
+                                    focusedCategoryIndex = max(0, focusedCategoryIndex - 1)
+                                }
                             } else {
-                                focusedChannelIndex = max(0, focusedChannelIndex - 1)
+                                if (!channelListState.isScrollInProgress) {
+                                    focusedChannelIndex = max(0, focusedChannelIndex - 1)
+                                }
                             }
                             true
                         }
                         KeyEvent.KEYCODE_DPAD_DOWN -> {
                             if (panelLevel == PanelLevel.CATEGORIES) {
-                                focusedCategoryIndex = minOf(
-                                    categories.lastIndex,
-                                    focusedCategoryIndex + 1,
-                                )
+                                if (!categoryListState.isScrollInProgress) {
+                                    focusedCategoryIndex = minOf(
+                                        categories.lastIndex,
+                                        focusedCategoryIndex + 1,
+                                    )
+                                }
                             } else {
-                                focusedChannelIndex = minOf(
-                                    visibleChannels.lastIndex,
-                                    focusedChannelIndex + 1,
-                                )
+                                if (!channelListState.isScrollInProgress) {
+                                    focusedChannelIndex = minOf(
+                                        visibleChannels.lastIndex,
+                                        focusedChannelIndex + 1,
+                                    )
+                                }
                             }
                             true
                         }
@@ -543,6 +583,14 @@ private fun ChannelPanel(
                         },
                         color = Color.White.copy(alpha = 0.58f),
                         fontSize = 13.sp,
+                    )
+                }
+                if (isEpgUpdating) {
+                    Spacer(Modifier.weight(1f))
+                    Icon(
+                        imageVector = Icons.Rounded.Sync,
+                        contentDescription = "EPG обновляется",
+                        tint = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
@@ -684,34 +732,14 @@ private fun ProgramProgress(start: Long?, end: Long?) {
 
 private suspend fun LazyListState.ensureItemVisible(index: Int) {
     if (index < 0) return
-    val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
-    if (itemInfo == null) {
-        val visibleItems = layoutInfo.visibleItemsInfo
-        val first = visibleItems.firstOrNull() ?: return
-        val last = visibleItems.lastOrNull() ?: return
-        val itemStep = visibleItems
-            .zipWithNext { current, next -> next.offset - current.offset }
-            .takeIf { it.isNotEmpty() }
-            ?.average()
-            ?.toFloat()
-            ?: first.size.toFloat()
-        if (index > last.index) {
-            animateScrollBy(itemStep)
-        } else if (index < first.index) {
-            animateScrollBy(-itemStep)
-        } else {
-            animateScrollToItem(index)
-        }
-        return
-    }
-    val scrollDelta = when {
-        itemInfo.offset < layoutInfo.viewportStartOffset ->
-            itemInfo.offset - layoutInfo.viewportStartOffset
-        itemInfo.offset + itemInfo.size > layoutInfo.viewportEndOffset ->
-            itemInfo.offset + itemInfo.size - layoutInfo.viewportEndOffset
-        else -> 0
-    }
-    if (scrollDelta != 0) animateScrollBy(scrollDelta.toFloat())
+    val itemSize = layoutInfo.visibleItemsInfo
+        .firstOrNull { it.index == index }
+        ?.size
+        ?: layoutInfo.visibleItemsInfo.firstOrNull()?.size
+        ?: return
+    val viewportSize = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
+    val centerOffset = -((viewportSize - itemSize) / 2)
+    animateScrollToItem(index, centerOffset)
 }
 
 private enum class PanelLevel {
@@ -723,6 +751,9 @@ private data class ChannelCategory(
     val name: String,
     val channels: List<Channel>,
 )
+
+private fun formatEpgUpdateTime(timestamp: Long): String =
+    SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(timestamp))
 
 @Composable
 private fun UpdateDialog(

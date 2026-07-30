@@ -47,6 +47,14 @@ class PlayerViewModel(
     fun hideSettings() = _uiState.update { it.copy(isSettingsVisible = false) }
     fun dismissUpdate() = _uiState.update { it.copy(availableUpdate = null) }
 
+    fun refreshEpgNow() {
+        val state = _uiState.value
+        if (state.isEpgUpdating || state.epgUrl.isBlank() || state.channels.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            refreshEpg(state.channels, state.epgUrl)
+        }
+    }
+
     fun saveSettings(url: String, epgUrl: String) {
         val normalizedUrl = url.trim()
         val normalizedEpgUrl = epgUrl.trim()
@@ -100,18 +108,16 @@ class PlayerViewModel(
                     )
                 }
                 if (epgUrl.isNotBlank()) {
-                    runCatching { getChannels.loadCurrentPrograms(channels, epgUrl) }
-                        .onSuccess { channelsWithPrograms ->
-                            _uiState.update { current ->
-                                val selectedId = current.selectedChannel?.id
-                                current.copy(
-                                    channels = channelsWithPrograms,
-                                    selectedChannel = channelsWithPrograms
-                                        .firstOrNull { it.id == selectedId }
-                                        ?: current.selectedChannel,
-                                )
-                            }
-                        }
+                    val cachedChannels = runCatching {
+                        getChannels.loadCurrentPrograms(channels, epgUrl)
+                    }.getOrDefault(channels)
+                    applyPrograms(cachedChannels)
+                    _uiState.update {
+                        it.copy(lastEpgUpdateAt = getChannels.getLastEpgUpdateAt(epgUrl))
+                    }
+                    if (getChannels.shouldRefreshEpg(epgUrl)) {
+                        refreshEpg(channels, epgUrl)
+                    }
                 }
             }
             .onFailure { error ->
@@ -122,5 +128,31 @@ class PlayerViewModel(
                     )
                 }
             }
+    }
+
+    private suspend fun refreshEpg(channels: List<Channel>, epgUrl: String) {
+        _uiState.update { it.copy(isEpgUpdating = true) }
+        runCatching {
+            getChannels.loadCurrentPrograms(channels, epgUrl, forceRefresh = true)
+        }
+            .onSuccess { channelsWithPrograms ->
+                applyPrograms(channelsWithPrograms)
+                _uiState.update {
+                    it.copy(lastEpgUpdateAt = getChannels.getLastEpgUpdateAt(epgUrl))
+                }
+            }
+        _uiState.update { it.copy(isEpgUpdating = false) }
+    }
+
+    private fun applyPrograms(channelsWithPrograms: List<Channel>) {
+        _uiState.update { current ->
+            val selectedId = current.selectedChannel?.id
+            current.copy(
+                channels = channelsWithPrograms,
+                selectedChannel = channelsWithPrograms
+                    .firstOrNull { it.id == selectedId }
+                    ?: current.selectedChannel,
+            )
+        }
     }
 }

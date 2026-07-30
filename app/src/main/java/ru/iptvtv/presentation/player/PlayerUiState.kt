@@ -12,5 +12,7 @@ data class PlayerUiState(
     val epgUrl: String = "",
     val isPlaylistLoading: Boolean = false,
     val playlistError: String? = null,
+    val isEpgUpdating: Boolean = false,
+    val lastEpgUpdateAt: Long? = null,
     val availableUpdate: AppUpdate? = null,
 )
