@@ -154,6 +154,7 @@ fun PlayerScreen(
             initialEpgUrl = state.epgUrl,
             isEpgUpdating = state.isEpgUpdating,
             lastEpgUpdateAt = state.lastEpgUpdateAt,
+            epgUpdateError = state.epgUpdateError,
             onDismiss = viewModel::hideSettings,
             onSave = viewModel::saveSettings,
             onRefreshEpg = viewModel::refreshEpgNow,
@@ -229,6 +230,7 @@ private fun SettingsDialog(
     initialEpgUrl: String,
     isEpgUpdating: Boolean,
     lastEpgUpdateAt: Long?,
+    epgUpdateError: String?,
     onDismiss: () -> Unit,
     onSave: (String, String) -> Unit,
     onRefreshEpg: () -> Unit,
@@ -334,6 +336,13 @@ private fun SettingsDialog(
                         Spacer(Modifier.width(6.dp))
                         Text(if (isEpgUpdating) "Обновляется…" else "Обновить сейчас")
                     }
+                }
+                epgUpdateError?.let {
+                    Text(
+                        "Ошибка EPG: $it",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp,
+                    )
                 }
             }
         },

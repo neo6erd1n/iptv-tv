@@ -131,7 +131,7 @@ class PlayerViewModel(
     }
 
     private suspend fun refreshEpg(channels: List<Channel>, epgUrl: String) {
-        _uiState.update { it.copy(isEpgUpdating = true) }
+        _uiState.update { it.copy(isEpgUpdating = true, epgUpdateError = null) }
         runCatching {
             getChannels.loadCurrentPrograms(channels, epgUrl, forceRefresh = true)
         }
@@ -139,6 +139,13 @@ class PlayerViewModel(
                 applyPrograms(channelsWithPrograms)
                 _uiState.update {
                     it.copy(lastEpgUpdateAt = getChannels.getLastEpgUpdateAt(epgUrl))
+                }
+            }
+            .onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        epgUpdateError = error.message ?: "Не удалось обновить EPG",
+                    )
                 }
             }
         _uiState.update { it.copy(isEpgUpdating = false) }
