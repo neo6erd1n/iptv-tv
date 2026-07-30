@@ -118,8 +118,16 @@ class PlayerViewModel(
         val end = program.end / 1_000
         val duration = (end - start).coerceAtLeast(1)
         val offset = ((System.currentTimeMillis() / 1_000) - start).coerceAtLeast(0)
+        val currentUtc = System.currentTimeMillis() / 1_000
         val catchupType = channel.catchupType.lowercase(Locale.ROOT)
         var template = channel.catchupSource
+        if (
+            template.isBlank() &&
+            catchupType in setOf("shift", "siptv", "timeshift")
+        ) {
+            val separator = if (channel.streamUrl.contains('?')) "&" else "?"
+            template = "$separator" + "utc={utc}&lutc={lutc}"
+        }
         if (
             template.isBlank() &&
             catchupType in setOf("flussonic", "fs", "flussonic-hls", "flussonic-ts")
@@ -144,6 +152,8 @@ class PlayerViewModel(
         val utcDate = Date(program.start)
         val replacements = mapOf(
             "{utc}" to start.toString(),
+            "{lutc}" to currentUtc.toString(),
+            "\${lutc}" to currentUtc.toString(),
             "{start}" to start.toString(),
             "\${start}" to start.toString(),
             "{timestamp}" to start.toString(),
@@ -170,7 +180,9 @@ class PlayerViewModel(
             }.format(utcDate)
             template = template.replace(token, value)
         }
-        val resolved = if (catchupType == "append") {
+        val resolved = if (
+            catchupType in setOf("append", "shift", "siptv", "timeshift")
+        ) {
             channel.streamUrl + template
         } else {
             template

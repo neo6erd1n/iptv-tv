@@ -202,6 +202,12 @@ class M3uChannelRepository(
                 defaultCatchupSource = extractAttribute(header, "catchup-source").trim()
                 defaultCatchupType = extractAttribute(header, "catchup")
                     .ifBlank { extractAttribute(header, "catchup-type") }
+                    .ifBlank {
+                        extractAttribute(header, "timeshift")
+                            .takeIf(String::isNotBlank)
+                            ?.let { "shift" }
+                            .orEmpty()
+                    }
                     .trim()
             }
         var pendingName: String? = null
@@ -230,6 +236,12 @@ class M3uChannelRepository(
                         .trim()
                     pendingCatchupType = extractAttribute(line, "catchup")
                         .ifBlank { extractAttribute(line, "catchup-type") }
+                        .ifBlank {
+                            extractAttribute(line, "timeshift")
+                                .takeIf(String::isNotBlank)
+                                ?.let { "shift" }
+                                .orEmpty()
+                        }
                         .ifBlank { defaultCatchupType }
                         .trim()
                     pendingLogoUrl = extractAttribute(line, "tvg-logo").trim()
@@ -458,7 +470,7 @@ class M3uChannelRepository(
     private companion object {
         const val CACHE_FILE_NAME = "playlist-cache.json"
         const val LEGACY_EPG_CACHE_FILE_NAME = "epg-cache.json"
-        const val CACHE_VERSION = 8
+        const val CACHE_VERSION = 9
         const val CACHE_TTL_MS = 12L * 60 * 60 * 1_000
         const val EPG_REFRESH_INTERVAL_MS = 12L * 60 * 60 * 1_000
         const val EPG_SCHEDULE_WINDOW_MS = 36L * 60 * 60 * 1_000
