@@ -133,11 +133,11 @@ class PlayerViewModel(
                 "/timeshift_abs-$start.m3u8"
         }
         if (template.isBlank()) return null
-        template = Regex("""\{duration:(\d+)}""").replace(template) { match ->
+        template = Regex("""\{duration:(\d+)\}""").replace(template) { match ->
             val divisor = match.groupValues[1].toLongOrNull()?.coerceAtLeast(1) ?: 1
             (duration / divisor).coerceAtLeast(1).toString()
         }
-        template = Regex("""\{offset:(\d+)}""").replace(template) { match ->
+        template = Regex("""\{offset:(\d+)\}""").replace(template) { match ->
             val divisor = match.groupValues[1].toLongOrNull()?.coerceAtLeast(1) ?: 1
             (offset / divisor).toString()
         }
