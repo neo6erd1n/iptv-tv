@@ -121,12 +121,14 @@ class PlayerViewModel(
         val currentUtc = System.currentTimeMillis() / 1_000
         val catchupType = channel.catchupType.lowercase(Locale.ROOT)
         var template = channel.catchupSource
+        var appendToLiveUrl = false
         if (
             template.isBlank() &&
             catchupType in setOf("shift", "siptv", "timeshift")
         ) {
             val separator = if (channel.streamUrl.contains('?')) "&" else "?"
             template = "$separator" + "utc={utc}&lutc={lutc}"
+            appendToLiveUrl = true
         }
         if (
             template.isBlank() &&
@@ -137,8 +139,9 @@ class PlayerViewModel(
                 "/timeshift_abs-$start$extension"
         }
         if (template.isBlank() && channel.streamUrl.contains(".m3u8", ignoreCase = true)) {
-            template = channel.streamUrl.substringBeforeLast('/') +
-                "/timeshift_abs-$start.m3u8"
+            val separator = if (channel.streamUrl.contains('?')) "&" else "?"
+            template = "$separator" + "utc={utc}&lutc={lutc}"
+            appendToLiveUrl = true
         }
         if (template.isBlank()) return null
         template = Regex("""\{duration:(\d+)\}""").replace(template) { match ->
@@ -181,6 +184,7 @@ class PlayerViewModel(
             template = template.replace(token, value)
         }
         val resolved = if (
+            appendToLiveUrl ||
             catchupType in setOf("append", "shift", "siptv", "timeshift")
         ) {
             channel.streamUrl + template
