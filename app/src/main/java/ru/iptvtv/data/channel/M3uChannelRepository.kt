@@ -9,6 +9,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.io.PushbackInputStream
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.zip.GZIPInputStream
@@ -81,9 +82,14 @@ class M3uChannelRepository(
             epgUrl.split(',').map(String::trim).filter(String::isNotBlank),
         )
         return channels.map { channel ->
+            val program = programs[channel.epgId]
+                ?: programs[normalizeEpgKey(channel.epgId)]
+                ?: programs[channel.name]
+                ?: programs[normalizeEpgKey(channel.name)]
             channel.copy(
-                currentProgram = programs[channel.epgId]
-                    ?: programs[channel.name],
+                currentProgram = program?.title,
+                currentProgramStart = program?.start,
+                currentProgramEnd = program?.end,
             )
         }
     }
@@ -106,6 +112,8 @@ class M3uChannelRepository(
                 category = item.optString("category").ifBlank { DEFAULT_CATEGORY },
                 epgId = item.optString("epgId"),
                 currentProgram = item.optString("currentProgram").ifBlank { null },
+                currentProgramStart = item.optLong("currentProgramStart").takeIf { it > 0L },
+                currentProgramEnd = item.optLong("currentProgramEnd").takeIf { it > 0L },
             )
         }.takeIf { it.isNotEmpty() }
     }.getOrNull()
@@ -121,7 +129,9 @@ class M3uChannelRepository(
                         .put("url", channel.streamUrl)
                         .put("category", channel.category)
                         .put("epgId", channel.epgId)
-                        .put("currentProgram", channel.currentProgram ?: ""),
+                        .put("currentProgram", channel.currentProgram ?: "")
+                        .put("currentProgramStart", channel.currentProgramStart ?: 0L)
+                        .put("currentProgramEnd", channel.currentProgramEnd ?: 0L),
                 )
             }
             cacheFile.writeText(
@@ -164,7 +174,9 @@ class M3uChannelRepository(
                     pendingCategory = extractAttribute(line, "group-title")
                         .trim()
                         .ifBlank { DEFAULT_CATEGORY }
-                    pendingEpgId = extractAttribute(line, "tvg-id").trim()
+                    pendingEpgId = extractAttribute(line, "tvg-id")
+                        .ifBlank { extractAttribute(line, "tvg-name") }
+                        .trim()
                 }
                 line.startsWith("#EXTGRP:", ignoreCase = true) &&
                     pendingName != null -> {
@@ -193,9 +205,9 @@ class M3uChannelRepository(
         return ParsedPlaylist(channels, epgUrls.toList())
     }
 
-    private fun loadCurrentPrograms(epgUrls: List<String>): Map<String, String> {
+    private fun loadCurrentPrograms(epgUrls: List<String>): Map<String, ProgramInfo> {
         if (epgUrls.isEmpty()) return emptyMap()
-        val result = mutableMapOf<String, String>()
+        val result = mutableMapOf<String, ProgramInfo>()
         epgUrls.forEach { epgUrl ->
             runCatching { readCurrentPrograms(epgUrl) }
                 .onSuccess { result.putAll(it) }
@@ -203,7 +215,7 @@ class M3uChannelRepository(
         return result
     }
 
-    private fun readCurrentPrograms(epgUrl: String): Map<String, String> {
+    private fun readCurrentPrograms(epgUrl: String): Map<String, ProgramInfo> {
         val connection = URL(epgUrl).openConnection() as HttpURLConnection
         return try {
             connection.connectTimeout = 12_000
@@ -213,10 +225,17 @@ class M3uChannelRepository(
             connection.setRequestProperty("Accept-Encoding", "gzip")
             if (connection.responseCode !in 200..299) return emptyMap()
 
-            val rawInput = connection.inputStream.buffered()
+            val rawInput = PushbackInputStream(connection.inputStream.buffered(), 2)
+            val signature = ByteArray(2)
+            val signatureSize = rawInput.read(signature)
+            if (signatureSize > 0) rawInput.unread(signature, 0, signatureSize)
+            val hasGzipSignature =
+                signatureSize == 2 &&
+                    signature[0] == 0x1f.toByte() &&
+                    signature[1] == 0x8b.toByte()
             val input = if (
                 connection.contentEncoding.equals("gzip", true) ||
-                epgUrl.endsWith(".gz", true)
+                hasGzipSignature
             ) {
                 GZIPInputStream(rawInput)
             } else {
@@ -235,8 +254,8 @@ class M3uChannelRepository(
     private fun parseCurrentPrograms(
         parser: XmlPullParser,
         now: Long,
-    ): Map<String, String> {
-        val programs = mutableMapOf<String, String>()
+    ): Map<String, ProgramInfo> {
+        val programs = mutableMapOf<String, ProgramInfo>()
         val channelNames = mutableMapOf<String, MutableList<String>>()
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
@@ -270,14 +289,19 @@ class M3uChannelRepository(
                     stop != null &&
                     now in start until stop
                 ) {
-                    programs[channelId] = title
+                    val program = ProgramInfo(title, start, stop)
+                    programs[channelId] = program
+                    programs[normalizeEpgKey(channelId)] = program
                 }
             }
             event = parser.next()
         }
         channelNames.forEach { (channelId, names) ->
-            programs[channelId]?.let { title ->
-                names.forEach { programs[it] = title }
+            programs[channelId]?.let { program ->
+                names.forEach { name ->
+                    programs[name] = program
+                    programs[normalizeEpgKey(name)] = program
+                }
             }
         }
         return programs
@@ -298,6 +322,10 @@ class M3uChannelRepository(
     private fun resolveUrl(baseUrl: String, value: String): String = runCatching {
         URI(baseUrl).resolve(value).toString()
     }.getOrDefault(value)
+
+    private fun normalizeEpgKey(value: String): String = value
+        .lowercase(Locale.ROOT)
+        .filter(Char::isLetterOrDigit)
 
     private fun extractAttribute(line: String, name: String): String {
         val match = Regex(
@@ -323,5 +351,11 @@ class M3uChannelRepository(
     private data class ParsedPlaylist(
         val channels: List<ParsedChannel>,
         val epgUrls: List<String>,
+    )
+
+    private data class ProgramInfo(
+        val title: String,
+        val start: Long,
+        val end: Long,
     )
 }

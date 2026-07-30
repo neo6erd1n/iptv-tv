@@ -40,6 +40,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -51,6 +52,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -76,6 +78,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import ru.iptvtv.domain.model.AppUpdate
 import ru.iptvtv.domain.model.Channel
+import kotlinx.coroutines.delay
 import kotlin.math.max
 
 @Composable
@@ -575,6 +578,8 @@ private fun ChannelPanel(
                         PanelListItem(
                             name = channel.name,
                             subtitle = channel.currentProgram,
+                            programStart = channel.currentProgramStart,
+                            programEnd = channel.currentProgramEnd,
                             selected = channel.id == selected?.id,
                             focused = index == focusedChannelIndex,
                         )
@@ -589,6 +594,8 @@ private fun ChannelPanel(
 private fun PanelListItem(
     name: String,
     subtitle: String? = null,
+    programStart: Long? = null,
+    programEnd: Long? = null,
     selected: Boolean,
     focused: Boolean,
     showChevron: Boolean = false,
@@ -603,7 +610,7 @@ private fun PanelListItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(68.dp)
+            .height(if (subtitle == null) 68.dp else 84.dp)
             .clip(shape)
             .background(background)
             .then(
@@ -638,6 +645,10 @@ private fun PanelListItem(
                     fontSize = 13.sp,
                     maxLines = 1,
                 )
+                ProgramProgress(
+                    start = programStart,
+                    end = programEnd,
+                )
             }
         }
         if (showChevron) {
@@ -647,11 +658,50 @@ private fun PanelListItem(
     }
 }
 
+@Composable
+private fun ProgramProgress(start: Long?, end: Long?) {
+    if (start == null || end == null || end <= start) return
+    var now by remember(start, end) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(start, end) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(30_000)
+        }
+    }
+    val progress = ((now - start).toFloat() / (end - start).toFloat())
+        .coerceIn(0f, 1f)
+    Spacer(Modifier.height(5.dp))
+    LinearProgressIndicator(
+        progress = { progress },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(3.dp)
+            .clip(RoundedCornerShape(2.dp)),
+        color = MaterialTheme.colorScheme.primary,
+        trackColor = Color.White.copy(alpha = 0.16f),
+    )
+}
+
 private suspend fun LazyListState.ensureItemVisible(index: Int) {
     if (index < 0) return
     val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
     if (itemInfo == null) {
-        animateScrollToItem(index)
+        val visibleItems = layoutInfo.visibleItemsInfo
+        val first = visibleItems.firstOrNull() ?: return
+        val last = visibleItems.lastOrNull() ?: return
+        val itemStep = visibleItems
+            .zipWithNext { current, next -> next.offset - current.offset }
+            .takeIf { it.isNotEmpty() }
+            ?.average()
+            ?.toFloat()
+            ?: first.size.toFloat()
+        if (index > last.index) {
+            animateScrollBy(itemStep)
+        } else if (index < first.index) {
+            animateScrollBy(-itemStep)
+        } else {
+            animateScrollToItem(index)
+        }
         return
     }
     val scrollDelta = when {

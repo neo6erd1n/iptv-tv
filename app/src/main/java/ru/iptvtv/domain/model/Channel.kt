@@ -7,4 +7,6 @@ data class Channel(
     val category: String,
     val epgId: String = "",
     val currentProgram: String? = null,
+    val currentProgramStart: Long? = null,
+    val currentProgramEnd: Long? = null,
 )
