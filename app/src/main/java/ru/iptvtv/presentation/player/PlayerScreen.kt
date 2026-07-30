@@ -465,7 +465,7 @@ private fun ChannelPanel(
     var focusedChannelIndex by remember(visibleChannels, selected?.id) {
         mutableIntStateOf(initialChannelIndex)
     }
-    val selectedChannel = channels.firstOrNull { it.id == selected?.id }
+    val selectedChannel = selected
     val programs = selectedChannel?.programs.orEmpty()
     var focusedProgramIndex by remember(selected?.id) {
         mutableIntStateOf(
@@ -473,6 +473,13 @@ private fun ChannelPanel(
                 System.currentTimeMillis() in it.start until it.end
             }.coerceAtLeast(0),
         )
+    }
+    LaunchedEffect(programs, panelLevel) {
+        if (panelLevel == PanelLevel.PROGRAMS && programs.isNotEmpty()) {
+            focusedProgramIndex = programs.indexOfFirst {
+                System.currentTimeMillis() in it.start until it.end
+            }.coerceAtLeast(0)
+        }
     }
     val panelFocus = remember { FocusRequester() }
     val categoryListState = rememberLazyListState(

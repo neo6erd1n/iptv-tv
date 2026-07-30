@@ -71,6 +71,21 @@ class PlayerViewModel(
         _uiState.update {
             it.copy(selectedChannel = channel)
         }
+        val epgUrl = _uiState.value.epgUrl
+        if (epgUrl.isNotBlank()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val programs = runCatching {
+                    getChannels.getPrograms(channel, epgUrl)
+                }.getOrDefault(emptyList())
+                _uiState.update { current ->
+                    if (current.selectedChannel?.id == channel.id) {
+                        current.copy(selectedChannel = channel.copy(programs = programs))
+                    } else {
+                        current
+                    }
+                }
+            }
+        }
     }
 
     fun playProgram(channel: Channel, program: Program) {

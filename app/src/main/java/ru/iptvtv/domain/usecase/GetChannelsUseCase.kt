@@ -19,4 +19,7 @@ class GetChannelsUseCase(
 
     suspend fun shouldRefreshEpg(epgUrl: String) =
         repository.shouldRefreshEpg(epgUrl)
+
+    suspend fun getPrograms(channel: ru.iptvtv.domain.model.Channel, epgUrl: String) =
+        repository.getPrograms(channel, epgUrl)
 }
