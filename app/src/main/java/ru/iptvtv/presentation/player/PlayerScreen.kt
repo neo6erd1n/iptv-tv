@@ -16,6 +16,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -26,6 +27,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -78,6 +81,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import ru.iptvtv.domain.model.AppUpdate
 import ru.iptvtv.domain.model.Channel
+import ru.iptvtv.domain.model.Program
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -144,6 +148,7 @@ fun PlayerScreen(
                 isEpgUpdating = state.isEpgUpdating,
                 onDismiss = viewModel::hideChannels,
                 onSelect = viewModel::selectChannel,
+                onPlayProgram = viewModel::playProgram,
             )
         }
     }
@@ -425,6 +430,7 @@ private fun ChannelPanel(
     isEpgUpdating: Boolean,
     onDismiss: () -> Unit,
     onSelect: (Channel) -> Unit,
+    onPlayProgram: (Channel, Program) -> Unit,
 ) {
     val categories = remember(channels) {
         listOf(
@@ -459,6 +465,15 @@ private fun ChannelPanel(
     var focusedChannelIndex by remember(visibleChannels, selected?.id) {
         mutableIntStateOf(initialChannelIndex)
     }
+    val selectedChannel = channels.firstOrNull { it.id == selected?.id }
+    val programs = selectedChannel?.programs.orEmpty()
+    var focusedProgramIndex by remember(selected?.id) {
+        mutableIntStateOf(
+            programs.indexOfFirst {
+                System.currentTimeMillis() in it.start until it.end
+            }.coerceAtLeast(0),
+        )
+    }
     val panelFocus = remember { FocusRequester() }
     val categoryListState = rememberLazyListState(
         initialFirstVisibleItemIndex = max(0, initialCategoryIndex - 3),
@@ -486,7 +501,7 @@ private fun ChannelPanel(
     Surface(
         modifier = Modifier
             .padding(24.dp)
-            .width(360.dp)
+            .width(if (panelLevel == PanelLevel.PROGRAMS) 760.dp else 360.dp)
             .fillMaxHeight()
             .clip(RoundedCornerShape(28.dp))
             .focusRequester(panelFocus)
@@ -500,10 +515,12 @@ private fun ChannelPanel(
                                 if (!categoryListState.isScrollInProgress) {
                                     focusedCategoryIndex = max(0, focusedCategoryIndex - 1)
                                 }
-                            } else {
+                            } else if (panelLevel == PanelLevel.CHANNELS) {
                                 if (!channelListState.isScrollInProgress) {
                                     focusedChannelIndex = max(0, focusedChannelIndex - 1)
                                 }
+                            } else {
+                                focusedProgramIndex = max(0, focusedProgramIndex - 1)
                             }
                             true
                         }
@@ -515,19 +532,23 @@ private fun ChannelPanel(
                                         focusedCategoryIndex + 1,
                                     )
                                 }
-                            } else {
+                            } else if (panelLevel == PanelLevel.CHANNELS) {
                                 if (!channelListState.isScrollInProgress) {
                                     focusedChannelIndex = minOf(
                                         visibleChannels.lastIndex,
                                         focusedChannelIndex + 1,
                                     )
                                 }
+                            } else {
+                                focusedProgramIndex = minOf(
+                                    programs.lastIndex,
+                                    focusedProgramIndex + 1,
+                                ).coerceAtLeast(0)
                             }
                             true
                         }
                         KeyEvent.KEYCODE_DPAD_CENTER,
                         KeyEvent.KEYCODE_ENTER,
-                        KeyEvent.KEYCODE_DPAD_RIGHT,
                         -> {
                             if (panelLevel == PanelLevel.CATEGORIES) {
                                 activeCategoryIndex = focusedCategoryIndex
@@ -537,17 +558,70 @@ private fun ChannelPanel(
                                     .indexOfFirst { it.id == selected?.id }
                                     .coerceAtLeast(0)
                                 panelLevel = PanelLevel.CHANNELS
-                            } else {
+                            } else if (panelLevel == PanelLevel.CHANNELS) {
                                 visibleChannels
                                     .getOrNull(focusedChannelIndex)
-                                    ?.let(onSelect)
+                                    ?.let { channel ->
+                                        onSelect(channel)
+                                        focusedProgramIndex = channel.programs.indexOfFirst {
+                                            System.currentTimeMillis() in it.start until it.end
+                                        }.coerceAtLeast(0)
+                                        panelLevel = PanelLevel.PROGRAMS
+                                    }
+                            } else {
+                                selectedChannel?.let { channel ->
+                                    programs.getOrNull(focusedProgramIndex)?.let { program ->
+                                        onPlayProgram(channel, program)
+                                    }
+                                }
                             }
                             true
                         }
-                        KeyEvent.KEYCODE_DPAD_LEFT,
-                        KeyEvent.KEYCODE_BACK,
-                        -> {
-                            if (panelLevel == PanelLevel.CHANNELS) {
+                        KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                            if (panelLevel == PanelLevel.PROGRAMS) {
+                                val currentDay = programs.getOrNull(focusedProgramIndex)
+                                    ?.let { formatProgramDay(it.start) }
+                                programs.indexOfFirst { program ->
+                                    program.start > programs
+                                        .getOrNull(focusedProgramIndex)
+                                        ?.start ?: Long.MAX_VALUE &&
+                                        formatProgramDay(program.start) != currentDay
+                                }.takeIf { it >= 0 }?.let { focusedProgramIndex = it }
+                            } else if (panelLevel == PanelLevel.CATEGORIES) {
+                                activeCategoryIndex = focusedCategoryIndex
+                                panelLevel = PanelLevel.CHANNELS
+                            }
+                            true
+                        }
+                        KeyEvent.KEYCODE_DPAD_LEFT -> {
+                            if (panelLevel == PanelLevel.PROGRAMS) {
+                                val currentDay = programs.getOrNull(focusedProgramIndex)
+                                    ?.let { formatProgramDay(it.start) }
+                                val previousDayIndex = (focusedProgramIndex - 1 downTo 0)
+                                    .firstOrNull {
+                                        formatProgramDay(programs[it].start) != currentDay
+                                    }
+                                if (previousDayIndex != null) {
+                                    val previousDay = formatProgramDay(
+                                        programs[previousDayIndex].start,
+                                    )
+                                    focusedProgramIndex = programs.indexOfFirst {
+                                        formatProgramDay(it.start) == previousDay
+                                    }.coerceAtLeast(0)
+                                } else {
+                                    panelLevel = PanelLevel.CHANNELS
+                                }
+                            } else if (panelLevel == PanelLevel.CHANNELS) {
+                                panelLevel = PanelLevel.CATEGORIES
+                            } else {
+                                onDismiss()
+                            }
+                            true
+                        }
+                        KeyEvent.KEYCODE_BACK -> {
+                            if (panelLevel == PanelLevel.PROGRAMS) {
+                                panelLevel = PanelLevel.CHANNELS
+                            } else if (panelLevel == PanelLevel.CHANNELS) {
                                 panelLevel = PanelLevel.CATEGORIES
                             } else {
                                 onDismiss()
@@ -563,7 +637,8 @@ private fun ChannelPanel(
         contentColor = Color.White,
         shadowElevation = 18.dp,
     ) {
-        Column(modifier = Modifier.padding(top = 28.dp)) {
+        Row {
+        Column(modifier = Modifier.padding(top = 28.dp).width(360.dp)) {
             Row(
                 modifier = Modifier.padding(horizontal = 28.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -643,6 +718,114 @@ private fun ChannelPanel(
                     }
                 }
             }
+        }
+        if (panelLevel == PanelLevel.PROGRAMS) {
+            ProgramArchivePanel(
+                programs = programs,
+                focusedIndex = focusedProgramIndex,
+            )
+        }
+        }
+    }
+}
+
+@Composable
+private fun ProgramArchivePanel(
+    programs: List<Program>,
+    focusedIndex: Int,
+) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(focusedIndex) {
+        if (programs.isNotEmpty()) listState.ensureItemVisible(focusedIndex)
+    }
+    Column(
+        modifier = Modifier
+            .width(400.dp)
+            .fillMaxHeight()
+            .background(Color.Black.copy(alpha = 0.18f))
+            .padding(top = 28.dp),
+    ) {
+        Text(
+            "Программа и архив",
+            modifier = Modifier.padding(horizontal = 24.dp),
+            fontSize = 22.sp,
+        )
+        Spacer(Modifier.height(16.dp))
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            itemsIndexed(programs) { index, program ->
+                val day = formatProgramDay(program.start)
+                val previousDay = programs.getOrNull(index - 1)
+                    ?.let { formatProgramDay(it.start) }
+                Column {
+                    if (day != previousDay) {
+                        Text(
+                            day,
+                            modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 8.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 15.sp,
+                        )
+                    }
+                    ProgramArchiveItem(
+                        program = program,
+                        focused = index == focusedIndex,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProgramArchiveItem(program: Program, focused: Boolean) {
+    val now = System.currentTimeMillis()
+    val isLive = now in program.start until program.end
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(if (focused) Color.White.copy(alpha = 0.18f) else Color.Transparent)
+            .then(
+                if (focused) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape)
+                else Modifier,
+            )
+            .padding(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "${formatProgramTime(program.start)}–${formatProgramTime(program.end)}",
+                color = Color.White.copy(alpha = 0.65f),
+                fontSize = 13.sp,
+            )
+            if (isLive) {
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "ЭФИР",
+                    color = Color(0xFFFF5252),
+                    fontSize = 12.sp,
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                "${((program.end - program.start) / 60_000).coerceAtLeast(1)} мин",
+                color = Color.White.copy(alpha = 0.48f),
+                fontSize = 12.sp,
+            )
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(program.title, fontSize = 16.sp, maxLines = 2)
+        if (program.description.isNotBlank()) {
+            Spacer(Modifier.height(5.dp))
+            Text(
+                program.description,
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = 12.sp,
+                maxLines = 3,
+            )
         }
     }
 }
@@ -728,15 +911,24 @@ private fun ProgramProgress(start: Long?, end: Long?) {
     val progress = ((now - start).toFloat() / (end - start).toFloat())
         .coerceIn(0f, 1f)
     Spacer(Modifier.height(5.dp))
-    LinearProgressIndicator(
-        progress = { progress },
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(3.dp)
-            .clip(RoundedCornerShape(2.dp)),
-        color = MaterialTheme.colorScheme.primary,
-        trackColor = Color.White.copy(alpha = 0.16f),
-    )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(8.dp)) {
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(3.dp)
+                .align(Alignment.Center),
+            color = MaterialTheme.colorScheme.primary,
+            trackColor = Color.White.copy(alpha = 0.16f),
+        )
+        Box(
+            modifier = Modifier
+                .offset(x = (maxWidth - 8.dp) * progress)
+                .size(8.dp)
+                .clip(RoundedCornerShape(50))
+                .background(Color.White),
+        )
+    }
 }
 
 private suspend fun LazyListState.ensureItemVisible(index: Int) {
@@ -754,6 +946,7 @@ private suspend fun LazyListState.ensureItemVisible(index: Int) {
 private enum class PanelLevel {
     CATEGORIES,
     CHANNELS,
+    PROGRAMS,
 }
 
 private data class ChannelCategory(
@@ -763,6 +956,12 @@ private data class ChannelCategory(
 
 private fun formatEpgUpdateTime(timestamp: Long): String =
     SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(timestamp))
+
+private fun formatProgramDay(timestamp: Long): String =
+    SimpleDateFormat("EEEE, dd MMMM", Locale.getDefault()).format(Date(timestamp))
+
+private fun formatProgramTime(timestamp: Long): String =
+    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
 
 @Composable
 private fun UpdateDialog(

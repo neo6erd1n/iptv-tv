@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import ru.iptvtv.domain.model.Channel
+import ru.iptvtv.domain.model.Program
 import ru.iptvtv.domain.usecase.CheckForUpdateUseCase
 import ru.iptvtv.domain.usecase.GetChannelsUseCase
 import ru.iptvtv.domain.usecase.GetEpgUrlUseCase
@@ -68,8 +69,35 @@ class PlayerViewModel(
 
     fun selectChannel(channel: Channel) {
         _uiState.update {
-            it.copy(selectedChannel = channel, isChannelPanelVisible = false)
+            it.copy(selectedChannel = channel)
         }
+    }
+
+    fun playProgram(channel: Channel, program: Program) {
+        val now = System.currentTimeMillis()
+        val playbackUrl = if (program.start <= now && now < program.end) {
+            channel.streamUrl
+        } else {
+            buildCatchupUrl(channel.catchupSource, program) ?: return
+        }
+        _uiState.update {
+            it.copy(selectedChannel = channel.copy(streamUrl = playbackUrl))
+        }
+    }
+
+    private fun buildCatchupUrl(template: String, program: Program): String? {
+        if (template.isBlank()) return null
+        val start = program.start / 1_000
+        val end = program.end / 1_000
+        val duration = (end - start).coerceAtLeast(1)
+        return template
+            .replace("{utc}", start.toString())
+            .replace("{start}", start.toString())
+            .replace("\${start}", start.toString())
+            .replace("{end}", end.toString())
+            .replace("\${end}", end.toString())
+            .replace("{duration}", duration.toString())
+            .replace("\${duration}", duration.toString())
     }
 
     private suspend fun loadPlaylist(url: String, epgUrl: String) {

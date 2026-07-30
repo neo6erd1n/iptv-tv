@@ -4,6 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import ru.iptvtv.domain.model.Channel
+import ru.iptvtv.domain.model.Program
 import ru.iptvtv.domain.repository.ChannelRepository
 import java.io.File
 import java.net.HttpURLConnection
@@ -97,10 +98,19 @@ class M3uChannelRepository(
             val channelKey = normalizeEpgKey(channel.epgId.ifBlank { channel.name })
             val resolvedId = schedule.aliases[channelKey] ?: channelKey
             val program = currentProgramsByChannel[resolvedId]
+            val channelPrograms = schedule.programs
+                .asSequence()
+                .filter { normalizeEpgKey(it.channelId) == resolvedId }
+                .sortedBy(ScheduledProgram::start)
+                .map {
+                    Program(it.title, it.description, it.start, it.end)
+                }
+                .toList()
             channel.copy(
                 currentProgram = program?.title,
                 currentProgramStart = program?.start,
                 currentProgramEnd = program?.end,
+                programs = channelPrograms,
             )
         }
     }
@@ -133,6 +143,7 @@ class M3uChannelRepository(
                 currentProgram = item.optString("currentProgram").ifBlank { null },
                 currentProgramStart = item.optLong("currentProgramStart").takeIf { it > 0L },
                 currentProgramEnd = item.optLong("currentProgramEnd").takeIf { it > 0L },
+                catchupSource = item.optString("catchupSource"),
             )
         }.takeIf { it.isNotEmpty() }
     }.getOrNull()
@@ -150,7 +161,8 @@ class M3uChannelRepository(
                         .put("epgId", channel.epgId)
                         .put("currentProgram", channel.currentProgram ?: "")
                         .put("currentProgramStart", channel.currentProgramStart ?: 0L)
-                        .put("currentProgramEnd", channel.currentProgramEnd ?: 0L),
+                        .put("currentProgramEnd", channel.currentProgramEnd ?: 0L)
+                        .put("catchupSource", channel.catchupSource),
                 )
             }
             cacheFile.writeText(
@@ -181,6 +193,7 @@ class M3uChannelRepository(
         var pendingName: String? = null
         var pendingCategory = DEFAULT_CATEGORY
         var pendingEpgId = ""
+        var pendingCatchupSource = ""
 
         content.lineSequence().forEach { rawLine ->
             val line = rawLine.trim()
@@ -196,6 +209,7 @@ class M3uChannelRepository(
                     pendingEpgId = extractAttribute(line, "tvg-id")
                         .ifBlank { extractAttribute(line, "tvg-name") }
                         .trim()
+                    pendingCatchupSource = extractAttribute(line, "catchup-source").trim()
                 }
                 line.startsWith("#EXTGRP:", ignoreCase = true) &&
                     pendingName != null -> {
@@ -210,6 +224,7 @@ class M3uChannelRepository(
                         name = pendingName.orEmpty(),
                         streamUrl = resolvedUrl,
                         category = pendingCategory,
+                        catchupSource = pendingCatchupSource,
                     )
                     channels += ParsedChannel(
                         channel = channel,
@@ -218,6 +233,7 @@ class M3uChannelRepository(
                     pendingName = null
                     pendingCategory = DEFAULT_CATEGORY
                     pendingEpgId = ""
+                    pendingCatchupSource = ""
                 }
             }
         }
@@ -329,10 +345,16 @@ class M3uChannelRepository(
                 val start = parseXmlTvTime(parser.getAttributeValue(null, "start"))
                 val stop = parseXmlTvTime(parser.getAttributeValue(null, "stop"))
                 var title: String? = null
+                var description = ""
                 var innerEvent = parser.next()
                 while (!(innerEvent == XmlPullParser.END_TAG && parser.name == "programme")) {
                     if (innerEvent == XmlPullParser.START_TAG && parser.name == "title") {
                         title = parser.nextText().trim()
+                    } else if (
+                        innerEvent == XmlPullParser.START_TAG &&
+                        parser.name == "desc"
+                    ) {
+                        description = parser.nextText().trim()
                     }
                     innerEvent = parser.next()
                 }
@@ -341,10 +363,10 @@ class M3uChannelRepository(
                     title?.isNotBlank() == true &&
                     start != null &&
                     stop != null &&
-                    stop > now &&
+                    stop > now - EPG_ARCHIVE_WINDOW_MS &&
                     start < now + EPG_SCHEDULE_WINDOW_MS
                 ) {
-                    programs += ScheduledProgram(channelId, title, start, stop)
+                    programs += ScheduledProgram(channelId, title, description, start, stop)
                 }
             }
             event = parser.next()
@@ -374,6 +396,7 @@ class M3uChannelRepository(
             ScheduledProgram(
                 channelId = item.getString("channel"),
                 title = item.getString("title"),
+                description = item.optString("description"),
                 start = item.getLong("start"),
                 end = item.getLong("end"),
             )
@@ -390,6 +413,7 @@ class M3uChannelRepository(
                 JSONObject()
                     .put("channel", program.channelId)
                     .put("title", program.title)
+                    .put("description", program.description)
                     .put("start", program.start)
                     .put("end", program.end),
             )
@@ -439,11 +463,12 @@ class M3uChannelRepository(
     private companion object {
         const val CACHE_FILE_NAME = "playlist-cache.json"
         const val EPG_CACHE_FILE_NAME = "epg-cache.json"
-        const val CACHE_VERSION = 5
-        const val EPG_CACHE_VERSION = 1
+        const val CACHE_VERSION = 6
+        const val EPG_CACHE_VERSION = 2
         const val CACHE_TTL_MS = 12L * 60 * 60 * 1_000
         const val EPG_REFRESH_INTERVAL_MS = 12L * 60 * 60 * 1_000
         const val EPG_SCHEDULE_WINDOW_MS = 36L * 60 * 60 * 1_000
+        const val EPG_ARCHIVE_WINDOW_MS = 7L * 24 * 60 * 60 * 1_000
         const val DEFAULT_CATEGORY = "Без категории"
         const val USER_AGENT = "IPTV-TV/0.2 Android"
     }
@@ -461,6 +486,7 @@ class M3uChannelRepository(
     private data class ScheduledProgram(
         val channelId: String,
         val title: String,
+        val description: String,
         val start: Long,
         val end: Long,
     )

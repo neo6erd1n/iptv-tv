@@ -9,4 +9,6 @@ data class Channel(
     val currentProgram: String? = null,
     val currentProgramStart: Long? = null,
     val currentProgramEnd: Long? = null,
+    val programs: List<Program> = emptyList(),
+    val catchupSource: String = "",
 )
