@@ -13,6 +13,7 @@ import java.net.URL
 import java.io.PushbackInputStream
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.Calendar
 import java.util.zip.GZIPInputStream
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
@@ -110,11 +111,21 @@ class M3uChannelRepository(
         return System.currentTimeMillis() - updatedAt >= EPG_REFRESH_INTERVAL_MS
     }
 
-    override suspend fun getPrograms(channel: Channel, epgUrl: String): List<Program> =
-        epgDatabase.programsForChannel(
+    override suspend fun getPrograms(channel: Channel, epgUrl: String): List<Program> {
+        val archiveStart = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+            add(Calendar.DAY_OF_YEAR, -6)
+        }.timeInMillis
+        return epgDatabase.programsForChannel(
             epgUrl,
             normalizeEpgKey(channel.epgId.ifBlank { channel.name }),
+            archiveStart,
+            System.currentTimeMillis(),
         )
+    }
 
     private fun readCache(playlistUrl: String, epgUrl: String): List<Channel>? = runCatching {
         if (!cacheFile.exists()) return null
@@ -137,6 +148,7 @@ class M3uChannelRepository(
                 currentProgramStart = item.optLong("currentProgramStart").takeIf { it > 0L },
                 currentProgramEnd = item.optLong("currentProgramEnd").takeIf { it > 0L },
                 catchupSource = item.optString("catchupSource"),
+                logoUrl = item.optString("logoUrl"),
             )
         }.takeIf { it.isNotEmpty() }
     }.getOrNull()
@@ -155,7 +167,8 @@ class M3uChannelRepository(
                         .put("currentProgram", channel.currentProgram ?: "")
                         .put("currentProgramStart", channel.currentProgramStart ?: 0L)
                         .put("currentProgramEnd", channel.currentProgramEnd ?: 0L)
-                        .put("catchupSource", channel.catchupSource),
+                        .put("catchupSource", channel.catchupSource)
+                        .put("logoUrl", channel.logoUrl),
                 )
             }
             cacheFile.writeText(
@@ -187,6 +200,7 @@ class M3uChannelRepository(
         var pendingCategory = DEFAULT_CATEGORY
         var pendingEpgId = ""
         var pendingCatchupSource = ""
+        var pendingLogoUrl = ""
 
         content.lineSequence().forEach { rawLine ->
             val line = rawLine.trim()
@@ -203,6 +217,7 @@ class M3uChannelRepository(
                         .ifBlank { extractAttribute(line, "tvg-name") }
                         .trim()
                     pendingCatchupSource = extractAttribute(line, "catchup-source").trim()
+                    pendingLogoUrl = extractAttribute(line, "tvg-logo").trim()
                 }
                 line.startsWith("#EXTGRP:", ignoreCase = true) &&
                     pendingName != null -> {
@@ -218,6 +233,10 @@ class M3uChannelRepository(
                         streamUrl = resolvedUrl,
                         category = pendingCategory,
                         catchupSource = pendingCatchupSource,
+                        logoUrl = pendingLogoUrl
+                            .takeIf(String::isNotBlank)
+                            ?.let { resolveUrl(playlistUrl, it) }
+                            .orEmpty(),
                     )
                     channels += ParsedChannel(
                         channel = channel,
@@ -227,6 +246,7 @@ class M3uChannelRepository(
                     pendingCategory = DEFAULT_CATEGORY
                     pendingEpgId = ""
                     pendingCatchupSource = ""
+                    pendingLogoUrl = ""
                 }
             }
         }
@@ -421,7 +441,7 @@ class M3uChannelRepository(
     private companion object {
         const val CACHE_FILE_NAME = "playlist-cache.json"
         const val LEGACY_EPG_CACHE_FILE_NAME = "epg-cache.json"
-        const val CACHE_VERSION = 6
+        const val CACHE_VERSION = 7
         const val CACHE_TTL_MS = 12L * 60 * 60 * 1_000
         const val EPG_REFRESH_INTERVAL_MS = 12L * 60 * 60 * 1_000
         const val EPG_SCHEDULE_WINDOW_MS = 36L * 60 * 60 * 1_000

@@ -81,15 +81,20 @@ internal class EpgDatabase(context: Context) :
         return result
     }
 
-    fun programsForChannel(source: String, alias: String): List<Program> =
+    fun programsForChannel(
+        source: String,
+        alias: String,
+        archiveStart: Long,
+        now: Long,
+    ): List<Program> =
         readableDatabase.rawQuery(
             """SELECT p.title, p.description, p.start, p.end
                FROM programs p
                JOIN aliases a
                  ON a.source = p.source AND a.channel_id = p.channel_id
-               WHERE p.source = ? AND a.alias = ?
-               ORDER BY p.start""",
-            arrayOf(source, alias),
+               WHERE p.source = ? AND a.alias = ? AND p.start >= ? AND p.start <= ?
+               ORDER BY p.start DESC""",
+            arrayOf(source, alias, archiveStart.toString(), now.toString()),
         ).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) {

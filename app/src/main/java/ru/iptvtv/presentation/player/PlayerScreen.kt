@@ -5,6 +5,7 @@ package ru.iptvtv.presentation.player
 import android.view.KeyEvent
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -57,6 +59,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,6 +67,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
@@ -83,6 +88,11 @@ import ru.iptvtv.domain.model.AppUpdate
 import ru.iptvtv.domain.model.Channel
 import ru.iptvtv.domain.model.Program
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.Calendar
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -508,7 +518,7 @@ private fun ChannelPanel(
     Surface(
         modifier = Modifier
             .padding(24.dp)
-            .width(if (panelLevel == PanelLevel.PROGRAMS) 760.dp else 360.dp)
+            .width(if (panelLevel == PanelLevel.PROGRAMS) 1120.dp else 360.dp)
             .fillMaxHeight()
             .clip(RoundedCornerShape(28.dp))
             .focusRequester(panelFocus)
@@ -588,12 +598,11 @@ private fun ChannelPanel(
                             if (panelLevel == PanelLevel.PROGRAMS) {
                                 val currentDay = programs.getOrNull(focusedProgramIndex)
                                     ?.let { formatProgramDay(it.start) }
-                                programs.indexOfFirst { program ->
-                                    program.start > programs
-                                        .getOrNull(focusedProgramIndex)
-                                        ?.start ?: Long.MAX_VALUE &&
-                                        formatProgramDay(program.start) != currentDay
-                                }.takeIf { it >= 0 }?.let { focusedProgramIndex = it }
+                                ((focusedProgramIndex + 1)..programs.lastIndex)
+                                    .firstOrNull {
+                                        formatProgramDay(programs[it].start) != currentDay
+                                    }
+                                    ?.let { focusedProgramIndex = it }
                             } else if (panelLevel == PanelLevel.CATEGORIES) {
                                 activeCategoryIndex = focusedCategoryIndex
                                 panelLevel = PanelLevel.CHANNELS
@@ -716,6 +725,7 @@ private fun ChannelPanel(
                     ) { index, channel ->
                         PanelListItem(
                             name = channel.name,
+                            logoUrl = channel.logoUrl,
                             subtitle = channel.currentProgram,
                             programStart = channel.currentProgramStart,
                             programEnd = channel.currentProgramEnd,
@@ -731,6 +741,7 @@ private fun ChannelPanel(
                 programs = programs,
                 focusedIndex = focusedProgramIndex,
             )
+            ProgramDetailsPanel(programs.getOrNull(focusedProgramIndex))
         }
         }
     }
@@ -757,6 +768,7 @@ private fun ProgramArchivePanel(
             modifier = Modifier.padding(horizontal = 24.dp),
             fontSize = 22.sp,
         )
+        ArchiveDayTabs(programs.getOrNull(focusedIndex)?.start)
         Spacer(Modifier.height(16.dp))
         LazyColumn(
             state = listState,
@@ -825,13 +837,92 @@ private fun ProgramArchiveItem(program: Program, focused: Boolean) {
         }
         Spacer(Modifier.height(5.dp))
         Text(program.title, fontSize = 16.sp, maxLines = 2)
-        if (program.description.isNotBlank()) {
-            Spacer(Modifier.height(5.dp))
+    }
+}
+
+@Composable
+private fun ArchiveDayTabs(selectedTimestamp: Long?) {
+    val dayStarts = remember {
+        val calendar = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        List(7) { offset ->
+            (calendar.clone() as Calendar).apply {
+                add(Calendar.DAY_OF_YEAR, -offset)
+            }.timeInMillis
+        }
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        repeat(7) { offset ->
+            val dayStart = dayStarts[offset]
+            val nextDayStart = if (offset == 0) {
+                (Calendar.getInstance().apply {
+                    timeInMillis = dayStart
+                    add(Calendar.DAY_OF_YEAR, 1)
+                }).timeInMillis
+            } else {
+                dayStarts[offset - 1]
+            }
+            val selected = selectedTimestamp != null &&
+                selectedTimestamp >= dayStart &&
+                selectedTimestamp < nextDayStart
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = if (selected) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                } else {
+                    Color.White.copy(alpha = 0.08f)
+                },
+            ) {
+                Text(
+                    when (offset) {
+                        0 -> "Сегодня"
+                        1 -> "Вчера"
+                        else -> SimpleDateFormat("dd.MM", Locale.getDefault())
+                            .format(Date(dayStart))
+                    },
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 6.dp),
+                    fontSize = 10.sp,
+                    color = if (selected) MaterialTheme.colorScheme.primary else Color.White,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProgramDetailsPanel(program: Program?) {
+    Column(
+        modifier = Modifier
+            .width(360.dp)
+            .fillMaxHeight()
+            .background(Color.Black.copy(alpha = 0.28f))
+            .padding(24.dp),
+    ) {
+        Text("Подробнее", fontSize = 20.sp)
+        Spacer(Modifier.height(22.dp))
+        if (program != null) {
+            Text(program.title, fontSize = 22.sp)
+            Spacer(Modifier.height(10.dp))
             Text(
-                program.description,
+                "${formatProgramTime(program.start)}–${formatProgramTime(program.end)} · " +
+                    "${((program.end - program.start) / 60_000).coerceAtLeast(1)} мин",
                 color = Color.White.copy(alpha = 0.6f),
-                fontSize = 12.sp,
-                maxLines = 3,
+                fontSize = 13.sp,
+            )
+            Spacer(Modifier.height(20.dp))
+            Text(
+                program.description.ifBlank { "Описание отсутствует" },
+                color = Color.White.copy(alpha = 0.78f),
+                fontSize = 15.sp,
             )
         }
     }
@@ -840,6 +931,7 @@ private fun ProgramArchiveItem(program: Program, focused: Boolean) {
 @Composable
 private fun PanelListItem(
     name: String,
+    logoUrl: String = "",
     subtitle: String? = null,
     programStart: Long? = null,
     programEnd: Long? = null,
@@ -877,6 +969,8 @@ private fun PanelListItem(
                 ),
         )
         Spacer(Modifier.width(16.dp))
+        ChannelLogo(logoUrl)
+        if (logoUrl.isNotBlank()) Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 name,
@@ -902,6 +996,64 @@ private fun PanelListItem(
             Spacer(Modifier.width(10.dp))
             Text("›", color = MaterialTheme.colorScheme.primary, fontSize = 22.sp)
         }
+    }
+}
+
+@Composable
+private fun ChannelLogo(url: String) {
+    if (url.isBlank()) return
+    val bitmap by produceState<android.graphics.Bitmap?>(
+        initialValue = ChannelLogoMemoryCache.get(url),
+        url,
+    ) {
+        if (value != null) return@produceState
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val connection = URL(url).openConnection() as HttpURLConnection
+                try {
+                    connection.connectTimeout = 5_000
+                    connection.readTimeout = 8_000
+                    connection.setRequestProperty("User-Agent", "IPTV-TV/0.2 Android")
+                    if (connection.responseCode !in 200..299) return@runCatching null
+                    connection.inputStream.use {
+                        BitmapFactory.decodeStream(
+                            it,
+                            null,
+                            BitmapFactory.Options().apply {
+                                inSampleSize = 2
+                                inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+                            },
+                        )?.also { bitmap ->
+                            ChannelLogoMemoryCache.put(url, bitmap)
+                        }
+                    }
+                } finally {
+                    connection.disconnect()
+                }
+            }.getOrNull()
+        }
+    }
+    bitmap?.let {
+        Image(
+            bitmap = it.asImageBitmap(),
+            contentDescription = null,
+            modifier = Modifier
+                .size(38.dp)
+                .clip(RoundedCornerShape(8.dp)),
+            contentScale = ContentScale.Fit,
+        )
+    }
+}
+
+private object ChannelLogoMemoryCache {
+    private val cache = object : android.util.LruCache<String, android.graphics.Bitmap>(8 * 1024) {
+        override fun sizeOf(key: String, value: android.graphics.Bitmap): Int =
+            value.byteCount / 1024
+    }
+
+    fun get(url: String): android.graphics.Bitmap? = cache.get(url)
+    fun put(url: String, bitmap: android.graphics.Bitmap) {
+        cache.put(url, bitmap)
     }
 }
 

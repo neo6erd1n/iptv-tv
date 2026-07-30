@@ -11,4 +11,5 @@ data class Channel(
     val currentProgramEnd: Long? = null,
     val programs: List<Program> = emptyList(),
     val catchupSource: String = "",
+    val logoUrl: String = "",
 )
