@@ -14,8 +14,10 @@ import ru.iptvtv.data.settings.SharedPreferencesStreamSettingsRepository
 import ru.iptvtv.data.update.GitHubUpdateRepository
 import ru.iptvtv.domain.usecase.CheckForUpdateUseCase
 import ru.iptvtv.domain.usecase.GetStreamUrlUseCase
+import ru.iptvtv.domain.usecase.GetEpgUrlUseCase
 import ru.iptvtv.domain.usecase.GetChannelsUseCase
 import ru.iptvtv.domain.usecase.SaveStreamUrlUseCase
+import ru.iptvtv.domain.usecase.SaveEpgUrlUseCase
 import ru.iptvtv.presentation.player.PlayerScreen
 import ru.iptvtv.presentation.player.PlayerViewModel
 import ru.iptvtv.presentation.theme.IptvTheme
@@ -81,7 +83,9 @@ private class PlayerViewModelFactory(
         val settingsRepository = SharedPreferencesStreamSettingsRepository(context)
         return PlayerViewModel(
             getStreamUrl = GetStreamUrlUseCase(settingsRepository),
+            getEpgUrl = GetEpgUrlUseCase(settingsRepository),
             saveStreamUrl = SaveStreamUrlUseCase(settingsRepository),
+            saveEpgUrl = SaveEpgUrlUseCase(settingsRepository),
             getChannels = GetChannelsUseCase(M3uChannelRepository(context)),
             checkForUpdate = CheckForUpdateUseCase(
                 GitHubUpdateRepository(BuildConfig.GITHUB_REPOSITORY),

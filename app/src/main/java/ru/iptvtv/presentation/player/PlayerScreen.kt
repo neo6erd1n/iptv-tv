@@ -144,6 +144,7 @@ fun PlayerScreen(
     if (state.isSettingsVisible) {
         SettingsDialog(
             initialUrl = state.streamUrl,
+            initialEpgUrl = state.epgUrl,
             onDismiss = viewModel::hideSettings,
             onSave = viewModel::saveSettings,
         )
@@ -215,14 +216,22 @@ private fun EmptyPlayerState(
 @Composable
 private fun SettingsDialog(
     initialUrl: String,
+    initialEpgUrl: String,
     onDismiss: () -> Unit,
-    onSave: (String) -> Unit,
+    onSave: (String, String) -> Unit,
 ) {
     var url by remember(initialUrl) { mutableStateOf(initialUrl) }
+    var epgUrl by remember(initialEpgUrl) { mutableStateOf(initialEpgUrl) }
     var showError by remember { mutableStateOf(false) }
+    var showEpgError by remember { mutableStateOf(false) }
     val inputFocus = remember { FocusRequester() }
     val isValid = url.trim().let {
         it.startsWith("https://", ignoreCase = true) ||
+            it.startsWith("http://", ignoreCase = true)
+    }
+    val isEpgValid = epgUrl.trim().let {
+        it.isBlank() ||
+            it.startsWith("https://", ignoreCase = true) ||
             it.startsWith("http://", ignoreCase = true)
     }
 
@@ -271,12 +280,35 @@ private fun SettingsDialog(
                         }
                     },
                 )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = epgUrl,
+                    onValueChange = {
+                        epgUrl = it
+                        showEpgError = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Ссылка на EPG (XMLTV)") },
+                    placeholder = { Text("https://…/epg.xml.gz") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    isError = showEpgError,
+                    supportingText = {
+                        if (showEpgError) {
+                            Text("Ссылка должна начинаться с http:// или https://")
+                        } else {
+                            Text("Можно оставить пустой — тогда адрес берётся из M3U")
+                        }
+                    },
+                )
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    if (isValid) onSave(url) else showError = true
+                    showError = !isValid
+                    showEpgError = !isEpgValid
+                    if (isValid && isEpgValid) onSave(url, epgUrl)
                 },
             ) {
                 Text("Сохранить")
@@ -365,7 +397,11 @@ private fun ChannelPanel(
     val initialCategoryIndex = categories.indexOfFirst {
         it.name == selected?.category
     }.coerceAtLeast(0)
-    var panelLevel by remember { mutableStateOf(PanelLevel.CATEGORIES) }
+    var panelLevel by remember {
+        mutableStateOf(
+            if (selected == null) PanelLevel.CATEGORIES else PanelLevel.CHANNELS,
+        )
+    }
     var focusedCategoryIndex by remember {
         mutableIntStateOf(initialCategoryIndex)
     }
@@ -373,16 +409,19 @@ private fun ChannelPanel(
         mutableIntStateOf(initialCategoryIndex)
     }
     val visibleChannels = categories[activeCategoryIndex].channels
+    val initialChannelIndex = visibleChannels
+        .indexOfFirst { it.id == selected?.id }
+        .coerceAtLeast(0)
     var focusedChannelIndex by remember(visibleChannels, selected?.id) {
-        mutableIntStateOf(
-            visibleChannels.indexOfFirst { it.id == selected?.id }.coerceAtLeast(0),
-        )
+        mutableIntStateOf(initialChannelIndex)
     }
     val panelFocus = remember { FocusRequester() }
     val categoryListState = rememberLazyListState(
         initialFirstVisibleItemIndex = max(0, initialCategoryIndex - 3),
     )
-    val channelListState = rememberLazyListState()
+    val channelListState = rememberLazyListState(
+        initialFirstVisibleItemIndex = max(0, initialChannelIndex - 3),
+    )
 
     LaunchedEffect(Unit) {
         panelFocus.requestFocus()
@@ -517,7 +556,6 @@ private fun ChannelPanel(
                     ) { index, category ->
                         PanelListItem(
                             name = category.name,
-                            detail = "${category.channels.size}",
                             selected = index == initialCategoryIndex,
                             focused = index == focusedCategoryIndex,
                             showChevron = true,
@@ -536,6 +574,7 @@ private fun ChannelPanel(
                     ) { index, channel ->
                         PanelListItem(
                             name = channel.name,
+                            subtitle = channel.currentProgram,
                             selected = channel.id == selected?.id,
                             focused = index == focusedChannelIndex,
                         )
@@ -549,7 +588,7 @@ private fun ChannelPanel(
 @Composable
 private fun PanelListItem(
     name: String,
-    detail: String? = null,
+    subtitle: String? = null,
     selected: Boolean,
     focused: Boolean,
     showChevron: Boolean = false,
@@ -584,19 +623,22 @@ private fun PanelListItem(
                 ),
         )
         Spacer(Modifier.width(16.dp))
-        Text(
-            name,
-            modifier = Modifier.weight(1f),
-            color = Color.White,
-            fontSize = 17.sp,
-            maxLines = 1,
-        )
-        detail?.let {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                it,
-                color = Color.White.copy(alpha = 0.55f),
-                fontSize = 14.sp,
+                name,
+                color = Color.White,
+                fontSize = 17.sp,
+                maxLines = 1,
             )
+            subtitle?.takeIf(String::isNotBlank)?.let {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    it,
+                    color = Color.White.copy(alpha = 0.58f),
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                )
+            }
         }
         if (showChevron) {
             Spacer(Modifier.width(10.dp))
@@ -609,7 +651,7 @@ private suspend fun LazyListState.ensureItemVisible(index: Int) {
     if (index < 0) return
     val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
     if (itemInfo == null) {
-        scrollToItem(index)
+        animateScrollToItem(index)
         return
     }
     val scrollDelta = when {

@@ -9,6 +9,7 @@ data class PlayerUiState(
     val isChannelPanelVisible: Boolean = false,
     val isSettingsVisible: Boolean = false,
     val streamUrl: String = "",
+    val epgUrl: String = "",
     val isPlaylistLoading: Boolean = false,
     val playlistError: String? = null,
     val availableUpdate: AppUpdate? = null,
