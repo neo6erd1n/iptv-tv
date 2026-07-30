@@ -64,20 +64,27 @@ class M3uChannelRepository(
             if (parsedPlaylist.channels.isEmpty()) {
                 error("В плейлисте не найдено каналов")
             }
-            val epgUrls = epgUrl
-                .split(',')
-                .map(String::trim)
-                .filter(String::isNotBlank)
-                .ifEmpty { parsedPlaylist.epgUrls }
-            val programs = loadCurrentPrograms(epgUrls)
             parsedPlaylist.channels.map { parsedChannel ->
-                parsedChannel.channel.copy(
-                    currentProgram = programs[parsedChannel.epgId]
-                        ?: programs[parsedChannel.channel.name],
-                )
+                parsedChannel.channel.copy(epgId = parsedChannel.epgId)
             }.also { writeCache(playlistUrl, epgUrl, it) }
         } finally {
             connection.disconnect()
+        }
+    }
+
+    override suspend fun loadCurrentPrograms(
+        channels: List<Channel>,
+        epgUrl: String,
+    ): List<Channel> {
+        if (epgUrl.isBlank()) return channels
+        val programs = loadCurrentPrograms(
+            epgUrl.split(',').map(String::trim).filter(String::isNotBlank),
+        )
+        return channels.map { channel ->
+            channel.copy(
+                currentProgram = programs[channel.epgId]
+                    ?: programs[channel.name],
+            )
         }
     }
 
@@ -97,6 +104,7 @@ class M3uChannelRepository(
                 name = item.getString("name"),
                 streamUrl = item.getString("url"),
                 category = item.optString("category").ifBlank { DEFAULT_CATEGORY },
+                epgId = item.optString("epgId"),
                 currentProgram = item.optString("currentProgram").ifBlank { null },
             )
         }.takeIf { it.isNotEmpty() }
@@ -112,6 +120,7 @@ class M3uChannelRepository(
                         .put("name", channel.name)
                         .put("url", channel.streamUrl)
                         .put("category", channel.category)
+                        .put("epgId", channel.epgId)
                         .put("currentProgram", channel.currentProgram ?: ""),
                 )
             }
@@ -300,7 +309,7 @@ class M3uChannelRepository(
 
     private companion object {
         const val CACHE_FILE_NAME = "playlist-cache.json"
-        const val CACHE_VERSION = 4
+        const val CACHE_VERSION = 5
         const val CACHE_TTL_MS = 5 * 60 * 1_000L
         const val DEFAULT_CATEGORY = "Без категории"
         const val USER_AGENT = "IPTV-TV/0.2 Android"

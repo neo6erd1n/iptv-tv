@@ -4,4 +4,8 @@ import ru.iptvtv.domain.model.Channel
 
 interface ChannelRepository {
     suspend fun getChannels(playlistUrl: String, epgUrl: String = ""): List<Channel>
+    suspend fun loadCurrentPrograms(
+        channels: List<Channel>,
+        epgUrl: String,
+    ): List<Channel>
 }

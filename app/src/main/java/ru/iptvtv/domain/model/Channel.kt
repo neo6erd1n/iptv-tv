@@ -5,5 +5,6 @@ data class Channel(
     val name: String,
     val streamUrl: String,
     val category: String,
+    val epgId: String = "",
     val currentProgram: String? = null,
 )

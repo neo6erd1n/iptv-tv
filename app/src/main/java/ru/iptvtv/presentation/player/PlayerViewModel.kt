@@ -99,6 +99,20 @@ class PlayerViewModel(
                         isPlaylistLoading = false,
                     )
                 }
+                if (epgUrl.isNotBlank()) {
+                    runCatching { getChannels.loadCurrentPrograms(channels, epgUrl) }
+                        .onSuccess { channelsWithPrograms ->
+                            _uiState.update { current ->
+                                val selectedId = current.selectedChannel?.id
+                                current.copy(
+                                    channels = channelsWithPrograms,
+                                    selectedChannel = channelsWithPrograms
+                                        .firstOrNull { it.id == selectedId }
+                                        ?: current.selectedChannel,
+                                )
+                            }
+                        }
+                }
             }
             .onFailure { error ->
                 _uiState.update {
