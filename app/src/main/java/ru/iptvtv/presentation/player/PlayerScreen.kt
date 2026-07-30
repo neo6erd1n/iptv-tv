@@ -38,6 +38,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.LiveTv
+import androidx.compose.material.icons.rounded.PauseCircle
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Sync
@@ -81,6 +82,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
+import androidx.media3.common.C
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -104,6 +107,16 @@ fun PlayerScreen(
     onDownloadUpdate: (AppUpdate) -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var activePlayer by remember { mutableStateOf<ExoPlayer?>(null) }
+    var controlsVisible by remember { mutableStateOf(false) }
+    var controlsInteraction by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(controlsInteraction, controlsVisible) {
+        if (controlsVisible) {
+            delay(3_000)
+            controlsVisible = false
+        }
+    }
 
     BackHandler(enabled = state.isChannelPanelVisible) {
         viewModel.hideChannels()
@@ -127,7 +140,13 @@ fun PlayerScreen(
                             true
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
-                            if (state.isChannelPanelVisible) {
+                            if (controlsVisible) {
+                                activePlayer?.let {
+                                    it.seekTo((it.currentPosition - 10_000).coerceAtLeast(0))
+                                }
+                                controlsInteraction = System.currentTimeMillis()
+                                true
+                            } else if (state.isChannelPanelVisible) {
                                 false
                             } else {
                                 viewModel.showChannels()
@@ -135,10 +154,37 @@ fun PlayerScreen(
                             }
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                            if (state.isChannelPanelVisible) {
+                            if (controlsVisible) {
+                                activePlayer?.let {
+                                    val target = it.currentPosition + 10_000
+                                    it.seekTo(
+                                        if (it.duration > 0 && it.duration != C.TIME_UNSET) {
+                                            target.coerceAtMost(it.duration)
+                                        } else {
+                                            target
+                                        },
+                                    )
+                                }
+                                controlsInteraction = System.currentTimeMillis()
+                                true
+                            } else if (state.isChannelPanelVisible) {
                                 false
                             } else {
                                 true
+                            }
+                        }
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        -> {
+                            if (!state.isChannelPanelVisible && state.selectedChannel != null) {
+                                activePlayer?.let { player ->
+                                    player.playWhenReady = !player.playWhenReady
+                                    controlsVisible = true
+                                    controlsInteraction = System.currentTimeMillis()
+                                }
+                                true
+                            } else {
+                                false
                             }
                         }
                         else -> false
@@ -147,7 +193,10 @@ fun PlayerScreen(
             },
     ) {
         state.selectedChannel?.let { channel ->
-            VideoPlayer(channel = channel)
+            VideoPlayer(
+                channel = channel,
+                onPlayerChanged = { activePlayer = it },
+            )
         } ?: EmptyPlayerState(
             isLoading = state.isPlaylistLoading,
             error = state.playlistError,
@@ -158,6 +207,13 @@ fun PlayerScreen(
                 .align(Alignment.TopEnd)
                 .padding(top = 24.dp, end = 32.dp),
         )
+        if (controlsVisible) {
+            StreamControls(
+                player = activePlayer,
+                channel = state.selectedChannel,
+                program = state.playingProgram,
+            )
+        }
 
         AnimatedVisibility(
             visible = state.isChannelPanelVisible,
@@ -393,13 +449,23 @@ private fun SettingsDialog(
 }
 
 @Composable
-private fun VideoPlayer(channel: Channel) {
+private fun VideoPlayer(
+    channel: Channel,
+    onPlayerChanged: (ExoPlayer?) -> Unit,
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val player = remember {
-        ExoPlayer.Builder(context).build().apply {
+        val renderersFactory = DefaultRenderersFactory(context)
+            .setEnableDecoderFallback(true)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+        ExoPlayer.Builder(context, renderersFactory).build().apply {
             playWhenReady = true
         }
+    }
+
+    LaunchedEffect(player) {
+        onPlayerChanged(player)
     }
 
     LaunchedEffect(channel.streamUrl) {
@@ -413,7 +479,10 @@ private fun VideoPlayer(channel: Channel) {
     }
 
     DisposableEffect(Unit) {
-        onDispose(player::release)
+        onDispose {
+            onPlayerChanged(null)
+            player.release()
+        }
     }
 
     DisposableEffect(lifecycleOwner, player) {
@@ -464,6 +533,113 @@ private fun DeviceClock(modifier: Modifier = Modifier) {
         color = Color.White,
         fontSize = 20.sp,
     )
+}
+
+@Composable
+private fun StreamControls(
+    player: ExoPlayer?,
+    channel: Channel?,
+    program: Program?,
+) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var playerPosition by remember { mutableLongStateOf(0L) }
+    var liveOffset by remember { mutableLongStateOf(C.TIME_UNSET) }
+    LaunchedEffect(player) {
+        while (true) {
+            now = System.currentTimeMillis()
+            playerPosition = player?.currentPosition ?: 0L
+            liveOffset = player?.currentLiveOffset ?: C.TIME_UNSET
+            delay(250)
+        }
+    }
+    val start = program?.start ?: channel?.currentProgramStart
+    val end = program?.end ?: channel?.currentProgramEnd
+    val duration = if (start != null && end != null) {
+        (end - start).coerceAtLeast(1L)
+    } else {
+        player?.duration?.takeIf { it > 0 && it != C.TIME_UNSET } ?: 1L
+    }
+    val isLiveProgram = start != null && end != null && now in start until end
+    val position = when {
+        program != null && !isLiveProgram -> playerPosition
+        start != null -> {
+            val streamNow = if (liveOffset != C.TIME_UNSET && liveOffset >= 0) {
+                now - liveOffset
+            } else {
+                now
+            }
+            streamNow - start
+        }
+        else -> playerPosition
+    }.coerceIn(0L, duration)
+    val progress = position.toFloat() / duration.toFloat()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (player?.playWhenReady == false) {
+            Icon(
+                imageVector = Icons.Rounded.PauseCircle,
+                contentDescription = "Пауза",
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(88.dp),
+                tint = Color.White.copy(alpha = 0.9f),
+            )
+        }
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.72f))
+                .padding(horizontal = 48.dp, vertical = 22.dp),
+        ) {
+            Text(
+                program?.title ?: channel?.currentProgram.orEmpty(),
+                color = Color.White,
+                fontSize = 15.sp,
+                maxLines = 1,
+            )
+            Spacer(Modifier.height(10.dp))
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(12.dp),
+            ) {
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .align(Alignment.Center),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = Color.White.copy(alpha = 0.24f),
+                )
+                Box(
+                    modifier = Modifier
+                        .offset(x = (maxWidth - 12.dp) * progress)
+                        .size(12.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.White),
+                )
+            }
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(formatDuration(position), fontSize = 12.sp)
+                Spacer(Modifier.weight(1f))
+                Text(formatDuration(duration), fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+private fun formatDuration(milliseconds: Long): String {
+    val totalSeconds = (milliseconds / 1_000).coerceAtLeast(0)
+    val hours = totalSeconds / 3_600
+    val minutes = (totalSeconds % 3_600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%02d:%02d".format(minutes, seconds)
+    }
 }
 
 @Composable

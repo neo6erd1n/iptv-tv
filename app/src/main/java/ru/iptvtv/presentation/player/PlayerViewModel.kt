@@ -73,7 +73,7 @@ class PlayerViewModel(
 
     fun selectChannel(channel: Channel) {
         _uiState.update {
-            it.copy(selectedChannel = channel)
+            it.copy(selectedChannel = channel, playingProgram = null)
         }
         val epgUrl = _uiState.value.epgUrl
         if (epgUrl.isNotBlank()) {
@@ -109,6 +109,7 @@ class PlayerViewModel(
                     catchupSource = liveChannel.catchupSource,
                     catchupType = liveChannel.catchupType,
                 ),
+                playingProgram = program,
             )
         }
     }

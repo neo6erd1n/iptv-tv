@@ -14,8 +14,8 @@ android {
         applicationId = "ru.iptvtv"
         minSdk = 23
         targetSdk = 36
-        versionCode = 16
-        versionName = "0.16.0"
+        versionCode = 17
+        versionName = "0.17.0"
 
         buildConfigField(
             "String",
@@ -84,6 +84,7 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.ui)
+    implementation(libs.media3.ffmpeg)
     implementation(libs.coroutines.android)
     implementation(libs.core.ktx)
     debugImplementation(libs.compose.ui.tooling)
