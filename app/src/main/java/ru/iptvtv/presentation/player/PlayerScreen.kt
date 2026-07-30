@@ -71,6 +71,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -80,7 +81,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -393,7 +393,6 @@ private fun VideoPlayer(channel: Channel) {
     LaunchedEffect(channel.streamUrl) {
         val item = MediaItem.Builder()
             .setUri(channel.streamUrl)
-            .setMimeType(MimeTypes.APPLICATION_M3U8)
             .build()
         player.setMediaItem(item)
         player.prepare()
@@ -477,6 +476,9 @@ private fun ChannelPanel(
     }
     val selectedChannel = selected
     val programs = selectedChannel?.programs.orEmpty()
+    val programDayKeys = remember(programs) {
+        programs.map { formatProgramDay(it.start) }
+    }
     var focusedProgramIndex by remember(selected?.id) {
         mutableIntStateOf(
             programs.indexOfFirst {
@@ -596,11 +598,10 @@ private fun ChannelPanel(
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             if (panelLevel == PanelLevel.PROGRAMS) {
-                                val currentDay = programs.getOrNull(focusedProgramIndex)
-                                    ?.let { formatProgramDay(it.start) }
+                                val currentDay = programDayKeys.getOrNull(focusedProgramIndex)
                                 ((focusedProgramIndex + 1)..programs.lastIndex)
                                     .firstOrNull {
-                                        formatProgramDay(programs[it].start) != currentDay
+                                        programDayKeys[it] != currentDay
                                     }
                                     ?.let { focusedProgramIndex = it }
                             } else if (panelLevel == PanelLevel.CATEGORIES) {
@@ -611,19 +612,16 @@ private fun ChannelPanel(
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
                             if (panelLevel == PanelLevel.PROGRAMS) {
-                                val currentDay = programs.getOrNull(focusedProgramIndex)
-                                    ?.let { formatProgramDay(it.start) }
+                                val currentDay = programDayKeys.getOrNull(focusedProgramIndex)
                                 val previousDayIndex = (focusedProgramIndex - 1 downTo 0)
                                     .firstOrNull {
-                                        formatProgramDay(programs[it].start) != currentDay
+                                        programDayKeys[it] != currentDay
                                     }
                                 if (previousDayIndex != null) {
-                                    val previousDay = formatProgramDay(
-                                        programs[previousDayIndex].start,
-                                    )
-                                    focusedProgramIndex = programs.indexOfFirst {
-                                        formatProgramDay(it.start) == previousDay
-                                    }.coerceAtLeast(0)
+                                    val previousDay = programDayKeys[previousDayIndex]
+                                    focusedProgramIndex = programDayKeys
+                                        .indexOfFirst { it == previousDay }
+                                        .coerceAtLeast(0)
                                 } else {
                                     panelLevel = PanelLevel.CHANNELS
                                 }
@@ -773,7 +771,7 @@ private fun ProgramArchivePanel(
         LazyColumn(
             state = listState,
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             itemsIndexed(programs) { index, program ->
                 val day = formatProgramDay(program.start)
@@ -803,40 +801,46 @@ private fun ProgramArchiveItem(program: Program, focused: Boolean) {
     val now = System.currentTimeMillis()
     val isLive = now in program.start until program.end
     val shape = RoundedCornerShape(16.dp)
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
+            .height(52.dp)
             .clip(shape)
             .background(if (focused) Color.White.copy(alpha = 0.18f) else Color.Transparent)
             .then(
                 if (focused) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape)
                 else Modifier,
             )
-            .padding(14.dp),
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            formatProgramTime(program.start),
+            modifier = Modifier.width(46.dp),
+            color = Color.White.copy(alpha = 0.65f),
+            fontSize = 13.sp,
+        )
+        Text(
+            program.title,
+            modifier = Modifier.weight(1f),
+            fontSize = 14.sp,
+            maxLines = 1,
+        )
+        if (isLive) {
             Text(
-                "${formatProgramTime(program.start)}–${formatProgramTime(program.end)}",
-                color = Color.White.copy(alpha = 0.65f),
-                fontSize = 13.sp,
-            )
-            if (isLive) {
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    "ЭФИР",
-                    color = Color(0xFFFF5252),
-                    fontSize = 12.sp,
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            Text(
-                "${((program.end - program.start) / 60_000).coerceAtLeast(1)} мин",
-                color = Color.White.copy(alpha = 0.48f),
+                "ЭФИР",
+                color = Color(0xFFFF5252),
                 fontSize = 12.sp,
             )
+            Spacer(Modifier.width(8.dp))
         }
-        Spacer(Modifier.height(5.dp))
-        Text(program.title, fontSize = 16.sp, maxLines = 2)
+        Text(
+            "${((program.end - program.start) / 60_000).coerceAtLeast(1)} мин",
+            modifier = Modifier.width(48.dp),
+            color = Color.White.copy(alpha = 0.48f),
+            fontSize = 11.sp,
+            textAlign = TextAlign.End,
+        )
     }
 }
 
@@ -875,6 +879,7 @@ private fun ArchiveDayTabs(selectedTimestamp: Long?) {
                 selectedTimestamp >= dayStart &&
                 selectedTimestamp < nextDayStart
             Surface(
+                modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(10.dp),
                 color = if (selected) {
                     MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
@@ -891,6 +896,8 @@ private fun ArchiveDayTabs(selectedTimestamp: Long?) {
                     },
                     modifier = Modifier.padding(horizontal = 7.dp, vertical = 6.dp),
                     fontSize = 10.sp,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
                     color = if (selected) MaterialTheme.colorScheme.primary else Color.White,
                 )
             }

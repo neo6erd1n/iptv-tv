@@ -148,6 +148,7 @@ class M3uChannelRepository(
                 currentProgramStart = item.optLong("currentProgramStart").takeIf { it > 0L },
                 currentProgramEnd = item.optLong("currentProgramEnd").takeIf { it > 0L },
                 catchupSource = item.optString("catchupSource"),
+                catchupType = item.optString("catchupType"),
                 logoUrl = item.optString("logoUrl"),
             )
         }.takeIf { it.isNotEmpty() }
@@ -168,6 +169,7 @@ class M3uChannelRepository(
                         .put("currentProgramStart", channel.currentProgramStart ?: 0L)
                         .put("currentProgramEnd", channel.currentProgramEnd ?: 0L)
                         .put("catchupSource", channel.catchupSource)
+                        .put("catchupType", channel.catchupType)
                         .put("logoUrl", channel.logoUrl),
                 )
             }
@@ -186,6 +188,8 @@ class M3uChannelRepository(
     private fun parseIptvPlaylist(content: String, playlistUrl: String): ParsedPlaylist {
         val channels = mutableListOf<ParsedChannel>()
         val epgUrls = linkedSetOf<String>()
+        var defaultCatchupSource = ""
+        var defaultCatchupType = ""
         content.lineSequence().firstOrNull { it.trim().startsWith("#EXTM3U", true) }
             ?.let { header ->
                 listOf("url-tvg", "x-tvg-url").forEach { attribute ->
@@ -195,11 +199,16 @@ class M3uChannelRepository(
                         .filter(String::isNotBlank)
                         .mapTo(epgUrls) { resolveUrl(playlistUrl, it) }
                 }
+                defaultCatchupSource = extractAttribute(header, "catchup-source").trim()
+                defaultCatchupType = extractAttribute(header, "catchup")
+                    .ifBlank { extractAttribute(header, "catchup-type") }
+                    .trim()
             }
         var pendingName: String? = null
         var pendingCategory = DEFAULT_CATEGORY
         var pendingEpgId = ""
-        var pendingCatchupSource = ""
+        var pendingCatchupSource = defaultCatchupSource
+        var pendingCatchupType = defaultCatchupType
         var pendingLogoUrl = ""
 
         content.lineSequence().forEach { rawLine ->
@@ -216,7 +225,13 @@ class M3uChannelRepository(
                     pendingEpgId = extractAttribute(line, "tvg-id")
                         .ifBlank { extractAttribute(line, "tvg-name") }
                         .trim()
-                    pendingCatchupSource = extractAttribute(line, "catchup-source").trim()
+                    pendingCatchupSource = extractAttribute(line, "catchup-source")
+                        .ifBlank { defaultCatchupSource }
+                        .trim()
+                    pendingCatchupType = extractAttribute(line, "catchup")
+                        .ifBlank { extractAttribute(line, "catchup-type") }
+                        .ifBlank { defaultCatchupType }
+                        .trim()
                     pendingLogoUrl = extractAttribute(line, "tvg-logo").trim()
                 }
                 line.startsWith("#EXTGRP:", ignoreCase = true) &&
@@ -233,6 +248,7 @@ class M3uChannelRepository(
                         streamUrl = resolvedUrl,
                         category = pendingCategory,
                         catchupSource = pendingCatchupSource,
+                        catchupType = pendingCatchupType,
                         logoUrl = pendingLogoUrl
                             .takeIf(String::isNotBlank)
                             ?.let { resolveUrl(playlistUrl, it) }
@@ -245,7 +261,8 @@ class M3uChannelRepository(
                     pendingName = null
                     pendingCategory = DEFAULT_CATEGORY
                     pendingEpgId = ""
-                    pendingCatchupSource = ""
+                    pendingCatchupSource = defaultCatchupSource
+                    pendingCatchupType = defaultCatchupType
                     pendingLogoUrl = ""
                 }
             }
@@ -441,7 +458,7 @@ class M3uChannelRepository(
     private companion object {
         const val CACHE_FILE_NAME = "playlist-cache.json"
         const val LEGACY_EPG_CACHE_FILE_NAME = "epg-cache.json"
-        const val CACHE_VERSION = 7
+        const val CACHE_VERSION = 8
         const val CACHE_TTL_MS = 12L * 60 * 60 * 1_000
         const val EPG_REFRESH_INTERVAL_MS = 12L * 60 * 60 * 1_000
         const val EPG_SCHEDULE_WINDOW_MS = 36L * 60 * 60 * 1_000

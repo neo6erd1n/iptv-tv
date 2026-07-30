@@ -15,6 +15,10 @@ import ru.iptvtv.domain.usecase.GetEpgUrlUseCase
 import ru.iptvtv.domain.usecase.GetStreamUrlUseCase
 import ru.iptvtv.domain.usecase.SaveEpgUrlUseCase
 import ru.iptvtv.domain.usecase.SaveStreamUrlUseCase
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 class PlayerViewModel(
     private val getStreamUrl: GetStreamUrlUseCase,
@@ -90,29 +94,88 @@ class PlayerViewModel(
 
     fun playProgram(channel: Channel, program: Program) {
         val now = System.currentTimeMillis()
+        val liveChannel = _uiState.value.channels
+            .firstOrNull { it.id == channel.id }
+            ?: channel
         val playbackUrl = if (program.start <= now && now < program.end) {
-            channel.streamUrl
+            liveChannel.streamUrl
         } else {
-            buildCatchupUrl(channel.catchupSource, program) ?: return
+            buildCatchupUrl(liveChannel, program) ?: return
         }
         _uiState.update {
-            it.copy(selectedChannel = channel.copy(streamUrl = playbackUrl))
+            it.copy(
+                selectedChannel = channel.copy(
+                    streamUrl = playbackUrl,
+                    catchupSource = liveChannel.catchupSource,
+                    catchupType = liveChannel.catchupType,
+                ),
+            )
         }
     }
 
-    private fun buildCatchupUrl(template: String, program: Program): String? {
-        if (template.isBlank()) return null
+    private fun buildCatchupUrl(channel: Channel, program: Program): String? {
         val start = program.start / 1_000
         val end = program.end / 1_000
         val duration = (end - start).coerceAtLeast(1)
-        return template
-            .replace("{utc}", start.toString())
-            .replace("{start}", start.toString())
-            .replace("\${start}", start.toString())
-            .replace("{end}", end.toString())
-            .replace("\${end}", end.toString())
-            .replace("{duration}", duration.toString())
-            .replace("\${duration}", duration.toString())
+        val offset = ((System.currentTimeMillis() / 1_000) - start).coerceAtLeast(0)
+        val catchupType = channel.catchupType.lowercase(Locale.ROOT)
+        var template = channel.catchupSource
+        if (
+            template.isBlank() &&
+            catchupType in setOf("flussonic", "fs", "flussonic-hls", "flussonic-ts")
+        ) {
+            val extension = if (catchupType.endsWith("ts")) ".ts" else ".m3u8"
+            template = channel.streamUrl.substringBeforeLast('/') +
+                "/timeshift_abs-$start$extension"
+        }
+        if (template.isBlank() && channel.streamUrl.contains(".m3u8", ignoreCase = true)) {
+            template = channel.streamUrl.substringBeforeLast('/') +
+                "/timeshift_abs-$start.m3u8"
+        }
+        if (template.isBlank()) return null
+        template = Regex("""\{duration:(\d+)}""").replace(template) { match ->
+            val divisor = match.groupValues[1].toLongOrNull()?.coerceAtLeast(1) ?: 1
+            (duration / divisor).coerceAtLeast(1).toString()
+        }
+        template = Regex("""\{offset:(\d+)}""").replace(template) { match ->
+            val divisor = match.groupValues[1].toLongOrNull()?.coerceAtLeast(1) ?: 1
+            (offset / divisor).toString()
+        }
+        val utcDate = Date(program.start)
+        val replacements = mapOf(
+            "{utc}" to start.toString(),
+            "{start}" to start.toString(),
+            "\${start}" to start.toString(),
+            "{timestamp}" to start.toString(),
+            "\${timestamp}" to start.toString(),
+            "{end}" to end.toString(),
+            "\${end}" to end.toString(),
+            "{utcend}" to end.toString(),
+            "{duration}" to duration.toString(),
+            "\${duration}" to duration.toString(),
+            "{offset}" to offset.toString(),
+            "\${offset}" to offset.toString(),
+        )
+        replacements.forEach { (token, value) -> template = template.replace(token, value) }
+        mapOf(
+            "{Y}" to "yyyy",
+            "{m}" to "MM",
+            "{d}" to "dd",
+            "{H}" to "HH",
+            "{M}" to "mm",
+            "{S}" to "ss",
+        ).forEach { (token, pattern) ->
+            val value = SimpleDateFormat(pattern, Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }.format(utcDate)
+            template = template.replace(token, value)
+        }
+        val resolved = if (catchupType == "append") {
+            channel.streamUrl + template
+        } else {
+            template
+        }
+        return resolved
     }
 
     private suspend fun loadPlaylist(url: String, epgUrl: String) {
