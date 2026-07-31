@@ -22,4 +22,10 @@ class GetChannelsUseCase(
 
     suspend fun getPrograms(channel: ru.iptvtv.domain.model.Channel, epgUrl: String) =
         repository.getPrograms(channel, epgUrl)
+
+    suspend fun searchPrograms(
+        channels: List<ru.iptvtv.domain.model.Channel>,
+        epgUrl: String,
+        query: String,
+    ) = repository.searchPrograms(channels, epgUrl, query)
 }

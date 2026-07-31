@@ -110,6 +110,42 @@ internal class EpgDatabase(context: Context) :
             }
         }
 
+    fun searchPrograms(
+        source: String,
+        query: String,
+        archiveStart: Long,
+        now: Long,
+    ): List<Pair<String, Program>> =
+        readableDatabase.rawQuery(
+            """SELECT a.alias, p.title, p.description, p.start, p.end
+               FROM programs p
+               JOIN aliases a
+                 ON a.source = p.source AND a.channel_id = p.channel_id
+               WHERE p.source = ? AND p.start >= ? AND p.start <= ?
+                 AND p.title LIKE ? ESCAPE '\'
+               ORDER BY p.start DESC
+               LIMIT 100""",
+            arrayOf(
+                source,
+                archiveStart.toString(),
+                now.toString(),
+                "%${query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")}%",
+            ),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        cursor.getString(0) to Program(
+                            title = cursor.getString(1),
+                            description = cursor.getString(2),
+                            start = cursor.getLong(3),
+                            end = cursor.getLong(4),
+                        ),
+                    )
+                }
+            }
+        }
+
     fun beginRefresh(source: String): RefreshSession {
         val db = writableDatabase
         db.beginTransaction()

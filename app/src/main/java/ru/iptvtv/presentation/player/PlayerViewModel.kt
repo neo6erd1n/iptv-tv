@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import ru.iptvtv.domain.model.Channel
 import ru.iptvtv.domain.model.Program
 import ru.iptvtv.domain.usecase.CheckForUpdateUseCase
@@ -97,6 +98,28 @@ class PlayerViewModel(
                 }
             }
         }
+    }
+
+    fun openArchive(channel: Channel) {
+        _uiState.update { it.copy(archiveChannel = channel) }
+        val epgUrl = _uiState.value.epgUrl
+        if (epgUrl.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val programs = runCatching {
+                getChannels.getPrograms(channel, epgUrl)
+            }.getOrDefault(emptyList())
+            _uiState.update { current ->
+                if (current.archiveChannel?.id == channel.id) {
+                    current.copy(archiveChannel = channel.copy(programs = programs))
+                } else {
+                    current
+                }
+            }
+        }
+    }
+
+    suspend fun searchPrograms(query: String) = withContext(Dispatchers.IO) {
+        getChannels.searchPrograms(_uiState.value.channels, _uiState.value.epgUrl, query)
     }
 
     fun playProgram(channel: Channel, program: Program) {

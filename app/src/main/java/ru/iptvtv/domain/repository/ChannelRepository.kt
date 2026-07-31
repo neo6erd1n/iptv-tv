@@ -12,4 +12,9 @@ interface ChannelRepository {
     suspend fun getLastEpgUpdateAt(epgUrl: String): Long?
     suspend fun shouldRefreshEpg(epgUrl: String): Boolean
     suspend fun getPrograms(channel: Channel, epgUrl: String): List<ru.iptvtv.domain.model.Program>
+    suspend fun searchPrograms(
+        channels: List<Channel>,
+        epgUrl: String,
+        query: String,
+    ): List<ru.iptvtv.domain.model.ProgramSearchResult>
 }

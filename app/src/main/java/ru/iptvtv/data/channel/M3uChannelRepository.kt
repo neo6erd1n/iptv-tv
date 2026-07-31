@@ -5,6 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import ru.iptvtv.domain.model.Channel
 import ru.iptvtv.domain.model.Program
+import ru.iptvtv.domain.model.ProgramSearchResult
 import ru.iptvtv.domain.repository.ChannelRepository
 import java.io.File
 import java.net.HttpURLConnection
@@ -125,6 +126,32 @@ class M3uChannelRepository(
             archiveStart,
             System.currentTimeMillis(),
         )
+    }
+
+    override suspend fun searchPrograms(
+        channels: List<Channel>,
+        epgUrl: String,
+        query: String,
+    ): List<ProgramSearchResult> {
+        if (epgUrl.isBlank() || query.isBlank()) return emptyList()
+        val archiveStart = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+            add(Calendar.DAY_OF_YEAR, -6)
+        }.timeInMillis
+        val channelsByKey = channels.associateBy {
+            normalizeEpgKey(it.epgId.ifBlank { it.name })
+        }
+        return epgDatabase.searchPrograms(
+            epgUrl,
+            query,
+            archiveStart,
+            System.currentTimeMillis(),
+        ).mapNotNull { (alias, program) ->
+            channelsByKey[alias]?.let { ProgramSearchResult(it, program) }
+        }.distinctBy { "${it.channel.id}:${it.program.start}" }
     }
 
     private fun readCache(playlistUrl: String, epgUrl: String): List<Channel>? = runCatching {

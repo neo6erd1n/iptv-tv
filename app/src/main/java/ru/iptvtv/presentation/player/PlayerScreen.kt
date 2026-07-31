@@ -14,6 +14,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,6 +39,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.LiveTv
+import androidx.compose.material.icons.rounded.PauseCircle
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Sync
@@ -274,11 +277,14 @@ fun PlayerScreen(
             ChannelPanel(
                 channels = state.channels,
                 selected = state.selectedChannel,
+                archiveChannel = state.archiveChannel,
                 watchedProgramStart = watchedProgram?.start,
                 isEpgUpdating = state.isEpgUpdating,
                 onDismiss = viewModel::hideChannels,
                 onSelect = viewModel::selectChannel,
+                onOpenArchive = viewModel::openArchive,
                 onPlayProgram = viewModel::playProgram,
+                searchPrograms = viewModel::searchPrograms,
             )
         }
     }
@@ -635,6 +641,16 @@ private fun StreamControls(
     val remaining = (duration - position).coerceAtLeast(0L)
 
     Box(modifier = Modifier.fillMaxSize()) {
+        if (player?.playWhenReady == false) {
+            Icon(
+                imageVector = Icons.Rounded.PauseCircle,
+                contentDescription = "Пауза",
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(88.dp),
+                tint = Color.White.copy(alpha = 0.92f),
+            )
+        }
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -745,15 +761,165 @@ private fun archiveDayStart(daysAgo: Int): Long {
 }
 
 @Composable
+private fun SearchRail(focused: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .width(64.dp)
+            .fillMaxHeight()
+            .background(Color.Black.copy(alpha = 0.2f))
+            .then(
+                if (focused) {
+                    Modifier.border(
+                        2.dp,
+                        MaterialTheme.colorScheme.primary,
+                        RoundedCornerShape(topStart = 28.dp, bottomStart = 28.dp),
+                    )
+                } else {
+                    Modifier
+                },
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.Search,
+            contentDescription = "Поиск",
+            modifier = Modifier
+                .padding(top = 32.dp)
+                .size(28.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+@Composable
+private fun SearchDialog(
+    channels: List<Channel>,
+    archiveChannel: Channel?,
+    searchPrograms: suspend (String) -> List<ru.iptvtv.domain.model.ProgramSearchResult>,
+    onDismiss: () -> Unit,
+    onSelectChannel: (Channel) -> Unit,
+    onPlayProgram: (Channel, Program) -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val normalizedQuery = query.trim()
+    val epgResults by produceState(
+        initialValue = emptyList<ru.iptvtv.domain.model.ProgramSearchResult>(),
+        normalizedQuery,
+    ) {
+        value = emptyList()
+        if (normalizedQuery.length >= 2) {
+            delay(250)
+            value = runCatching { searchPrograms(normalizedQuery) }.getOrDefault(emptyList())
+        }
+    }
+    val results = remember(channels, archiveChannel, normalizedQuery, epgResults) {
+        if (normalizedQuery.length < 2) {
+            emptyList()
+        } else {
+            buildList {
+                channels
+                    .filter { it.name.contains(normalizedQuery, ignoreCase = true) }
+                    .forEach { add(SearchResult(it, null)) }
+                channels
+                    .filter {
+                        it.currentProgram?.contains(normalizedQuery, ignoreCase = true) == true
+                    }
+                    .forEach { channel ->
+                        val start = channel.currentProgramStart
+                        val end = channel.currentProgramEnd
+                        if (start != null && end != null) {
+                            add(
+                                SearchResult(
+                                    channel,
+                                    Program(channel.currentProgram.orEmpty(), "", start, end),
+                                ),
+                            )
+                        }
+                    }
+                archiveChannel?.programs
+                    .orEmpty()
+                    .filter { it.title.contains(normalizedQuery, ignoreCase = true) }
+                    .forEach { add(SearchResult(archiveChannel!!, it)) }
+                epgResults.forEach { add(SearchResult(it.channel, it.program)) }
+            }.distinctBy { "${it.channel.id}:${it.program?.start ?: 0L}" }.take(30)
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xF21A2232),
+        shape = RoundedCornerShape(28.dp),
+        title = { Text("Поиск каналов и передач") },
+        text = {
+            Column(modifier = Modifier.height(480.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Название") },
+                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                )
+                Spacer(Modifier.height(12.dp))
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    itemsIndexed(
+                        results,
+                        key = { _, result ->
+                            "${result.channel.id}:${result.program?.start ?: 0L}"
+                        },
+                    ) { _, result ->
+                        TextButton(
+                            onClick = {
+                                result.program?.let {
+                                    onPlayProgram(result.channel, it)
+                                } ?: onSelectChannel(result.channel)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    result.program?.title ?: result.channel.name,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = TextAlign.Start,
+                                    color = Color.White,
+                                )
+                                if (result.program != null) {
+                                    Text(
+                                        result.channel.name,
+                                        color = Color.White.copy(alpha = 0.55f),
+                                        fontSize = 12.sp,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Закрыть") }
+        },
+    )
+}
+
+@Composable
 private fun ChannelPanel(
     channels: List<Channel>,
     selected: Channel?,
+    archiveChannel: Channel?,
     watchedProgramStart: Long?,
     isEpgUpdating: Boolean,
     onDismiss: () -> Unit,
     onSelect: (Channel) -> Unit,
+    onOpenArchive: (Channel) -> Unit,
     onPlayProgram: (Channel, Program) -> Unit,
+    searchPrograms: suspend (String) -> List<ru.iptvtv.domain.model.ProgramSearchResult>,
 ) {
+    var showSearch by remember { mutableStateOf(false) }
+    var searchFocused by remember { mutableStateOf(false) }
     val categories = remember(channels) {
         listOf(
             ChannelCategory(
@@ -787,8 +953,7 @@ private fun ChannelPanel(
     var focusedChannelIndex by remember(visibleChannels, selected?.id) {
         mutableIntStateOf(initialChannelIndex)
     }
-    val selectedChannel = selected
-    val programs = selectedChannel?.programs.orEmpty()
+    val programs = archiveChannel?.programs.orEmpty()
     var archiveDayIndex by remember(selected?.id) { mutableIntStateOf(0) }
     val selectedDayStart = archiveDayStart(archiveDayIndex)
     val selectedDayEnd = archiveDayStart(archiveDayIndex - 1)
@@ -837,7 +1002,7 @@ private fun ChannelPanel(
     Surface(
         modifier = Modifier
             .padding(24.dp)
-            .width(if (panelLevel == PanelLevel.PROGRAMS) 1120.dp else 360.dp)
+            .width(if (panelLevel == PanelLevel.PROGRAMS) 1184.dp else 424.dp)
             .fillMaxHeight()
             .clip(RoundedCornerShape(28.dp))
             .focusRequester(panelFocus)
@@ -847,14 +1012,11 @@ private fun ChannelPanel(
                 } else {
                     when (event.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_DPAD_UP -> {
+                            if (searchFocused) return@onPreviewKeyEvent true
                             if (panelLevel == PanelLevel.CATEGORIES) {
-                                if (!categoryListState.isScrollInProgress) {
-                                    focusedCategoryIndex = max(0, focusedCategoryIndex - 1)
-                                }
+                                focusedCategoryIndex = max(0, focusedCategoryIndex - 1)
                             } else if (panelLevel == PanelLevel.CHANNELS) {
-                                if (!channelListState.isScrollInProgress) {
-                                    focusedChannelIndex = max(0, focusedChannelIndex - 1)
-                                }
+                                focusedChannelIndex = max(0, focusedChannelIndex - 1)
                             } else {
                                 focusedProgramIndex = if (focusedProgramIndex <= 0) {
                                     dayPrograms.lastIndex.coerceAtLeast(0)
@@ -865,20 +1027,17 @@ private fun ChannelPanel(
                             true
                         }
                         KeyEvent.KEYCODE_DPAD_DOWN -> {
+                            if (searchFocused) return@onPreviewKeyEvent true
                             if (panelLevel == PanelLevel.CATEGORIES) {
-                                if (!categoryListState.isScrollInProgress) {
-                                    focusedCategoryIndex = minOf(
-                                        categories.lastIndex,
-                                        focusedCategoryIndex + 1,
-                                    )
-                                }
+                                focusedCategoryIndex = minOf(
+                                    categories.lastIndex,
+                                    focusedCategoryIndex + 1,
+                                )
                             } else if (panelLevel == PanelLevel.CHANNELS) {
-                                if (!channelListState.isScrollInProgress) {
-                                    focusedChannelIndex = minOf(
-                                        visibleChannels.lastIndex,
-                                        focusedChannelIndex + 1,
-                                    )
-                                }
+                                focusedChannelIndex = minOf(
+                                    visibleChannels.lastIndex,
+                                    focusedChannelIndex + 1,
+                                )
                             } else {
                                 focusedProgramIndex =
                                     if (focusedProgramIndex >= dayPrograms.lastIndex) {
@@ -892,7 +1051,9 @@ private fun ChannelPanel(
                         KeyEvent.KEYCODE_DPAD_CENTER,
                         KeyEvent.KEYCODE_ENTER,
                         -> {
-                            if (panelLevel == PanelLevel.CATEGORIES) {
+                            if (searchFocused) {
+                                showSearch = true
+                            } else if (panelLevel == PanelLevel.CATEGORIES) {
                                 activeCategoryIndex = focusedCategoryIndex
                                 val categoryChannels =
                                     categories[activeCategoryIndex].channels
@@ -907,7 +1068,7 @@ private fun ChannelPanel(
                                         onSelect(channel)
                                     }
                             } else {
-                                selectedChannel?.let { channel ->
+                                archiveChannel?.let { channel ->
                                     dayPrograms.getOrNull(focusedProgramIndex)?.let { program ->
                                         onPlayProgram(channel, program)
                                     }
@@ -916,12 +1077,14 @@ private fun ChannelPanel(
                             true
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                            if (panelLevel == PanelLevel.PROGRAMS) {
+                            if (searchFocused) {
+                                searchFocused = false
+                            } else if (panelLevel == PanelLevel.PROGRAMS) {
                                 archiveDayIndex = minOf(6, archiveDayIndex + 1)
                                 focusedProgramIndex = 0
                             } else if (panelLevel == PanelLevel.CHANNELS) {
                                 visibleChannels.getOrNull(focusedChannelIndex)?.let { channel ->
-                                    onSelect(channel)
+                                    onOpenArchive(channel)
                                     archiveDayIndex = 0
                                     focusedProgramIndex = 0
                                     panelLevel = PanelLevel.PROGRAMS
@@ -943,7 +1106,11 @@ private fun ChannelPanel(
                             } else if (panelLevel == PanelLevel.CHANNELS) {
                                 panelLevel = PanelLevel.CATEGORIES
                             } else {
-                                onDismiss()
+                                if (searchFocused) {
+                                    onDismiss()
+                                } else {
+                                    searchFocused = true
+                                }
                             }
                             true
                         }
@@ -967,6 +1134,10 @@ private fun ChannelPanel(
         shadowElevation = 18.dp,
     ) {
         Row {
+        SearchRail(
+            focused = searchFocused,
+            onClick = { showSearch = true },
+        )
         Column(modifier = Modifier.padding(top = 28.dp).width(360.dp)) {
             Row(
                 modifier = Modifier.padding(horizontal = 28.dp),
@@ -1060,6 +1231,22 @@ private fun ChannelPanel(
         }
         }
     }
+    if (showSearch) {
+        SearchDialog(
+            channels = channels,
+            archiveChannel = archiveChannel,
+            searchPrograms = searchPrograms,
+            onDismiss = { showSearch = false },
+            onSelectChannel = {
+                onSelect(it)
+                showSearch = false
+            },
+            onPlayProgram = { channel, program ->
+                onPlayProgram(channel, program)
+                showSearch = false
+            },
+        )
+    }
 }
 
 @Composable
@@ -1092,7 +1279,10 @@ private fun ProgramArchivePanel(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            itemsIndexed(programs) { index, program ->
+            itemsIndexed(
+                programs,
+                key = { _, program -> program.start },
+            ) { index, program ->
                 ProgramArchiveItem(
                     program = program,
                     focused = index == focusedIndex,
@@ -1427,14 +1617,17 @@ private fun ProgramProgress(start: Long?, end: Long?) {
 
 private suspend fun LazyListState.ensureItemVisible(index: Int) {
     if (index < 0) return
-    val itemSize = layoutInfo.visibleItemsInfo
-        .firstOrNull { it.index == index }
-        ?.size
-        ?: layoutInfo.visibleItemsInfo.firstOrNull()?.size
-        ?: return
+    val visibleItems = layoutInfo.visibleItemsInfo
+    if (visibleItems.isEmpty()) return
+    val safeFirst = visibleItems.getOrNull(1)?.index ?: visibleItems.first().index
+    val safeLast = visibleItems.getOrNull(visibleItems.lastIndex - 1)?.index
+        ?: visibleItems.last().index
+    if (index in safeFirst..safeLast) return
+    val itemSize = visibleItems.firstOrNull { it.index == index }?.size
+        ?: visibleItems.first().size
     val viewportSize = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
     val centerOffset = -((viewportSize - itemSize) / 2)
-    animateScrollToItem(index, centerOffset)
+    scrollToItem(index, centerOffset)
 }
 
 private enum class PanelLevel {
@@ -1446,6 +1639,11 @@ private enum class PanelLevel {
 private data class ChannelCategory(
     val name: String,
     val channels: List<Channel>,
+)
+
+private data class SearchResult(
+    val channel: Channel,
+    val program: Program?,
 )
 
 private fun formatEpgUpdateTime(timestamp: Long): String =
