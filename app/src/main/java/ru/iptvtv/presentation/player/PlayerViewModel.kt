@@ -16,6 +16,7 @@ import ru.iptvtv.domain.usecase.GetEpgUrlUseCase
 import ru.iptvtv.domain.usecase.GetStreamUrlUseCase
 import ru.iptvtv.domain.usecase.SaveEpgUrlUseCase
 import ru.iptvtv.domain.usecase.SaveStreamUrlUseCase
+import ru.iptvtv.domain.repository.StreamSettingsRepository
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -29,11 +30,17 @@ class PlayerViewModel(
     private val getChannels: GetChannelsUseCase,
     private val checkForUpdate: CheckForUpdateUseCase,
     private val currentVersion: String,
+    private val settingsRepository: StreamSettingsRepository,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState = _uiState.asStateFlow()
 
     init {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update {
+                it.copy(favoriteChannelIds = settingsRepository.getFavoriteChannelIds())
+            }
+        }
         viewModelScope.launch(Dispatchers.IO) {
             loadPlaylist(getStreamUrl(), getEpgUrl())
         }
@@ -98,6 +105,31 @@ class PlayerViewModel(
                 }
             }
         }
+    }
+
+    fun toggleFavorite(channel: Channel) {
+        val updated = _uiState.value.favoriteChannelIds.toMutableSet().apply {
+            if (!add(channel.id)) remove(channel.id)
+        }.toSet()
+        _uiState.update { it.copy(favoriteChannelIds = updated) }
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsRepository.saveFavoriteChannelIds(updated)
+        }
+    }
+
+    fun selectAdjacentChannel(direction: Int) {
+        val state = _uiState.value
+        val selected = state.selectedChannel ?: return
+        val categoryChannels = state.channels.filter { it.category == selected.category }
+        if (categoryChannels.isEmpty()) return
+        val currentIndex = categoryChannels.indexOfFirst { it.id == selected.id }.coerceAtLeast(0)
+        val nextIndex = (currentIndex + direction).mod(categoryChannels.size)
+        selectChannel(categoryChannels[nextIndex])
+    }
+
+    fun returnToLive() {
+        val selected = _uiState.value.selectedChannel ?: return
+        _uiState.value.channels.firstOrNull { it.id == selected.id }?.let(::selectChannel)
     }
 
     fun openArchive(channel: Channel) {

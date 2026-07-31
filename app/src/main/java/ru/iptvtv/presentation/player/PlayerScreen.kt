@@ -44,6 +44,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -85,6 +86,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.C
+import androidx.media3.common.Player
+import androidx.media3.common.Tracks
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -107,11 +111,29 @@ import kotlin.math.max
 fun PlayerScreen(
     viewModel: PlayerViewModel,
     onDownloadUpdate: (AppUpdate) -> Unit,
+    onExit: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var activePlayer by remember { mutableStateOf<ExoPlayer?>(null) }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsInteraction by remember { mutableLongStateOf(0L) }
+    var exitArmedUntil by remember { mutableLongStateOf(0L) }
+    var exitHintVisible by remember { mutableStateOf(false) }
+    var audioDialogVisible by remember { mutableStateOf(false) }
+    var diagnosticsVisible by remember { mutableStateOf(false) }
+    var currentTracks by remember { mutableStateOf(Tracks.EMPTY) }
+    var playbackError by remember { mutableStateOf<String?>(null) }
+    var focusedControlIndex by remember { mutableIntStateOf(1) }
+    val controlActions = remember(state.isArchivePlayback) {
+        buildList {
+            add(StreamControlAction.REWIND)
+            add(StreamControlAction.PLAY_PAUSE)
+            add(StreamControlAction.FORWARD)
+            add(StreamControlAction.AUDIO)
+            if (state.isArchivePlayback) add(StreamControlAction.RETURN_TO_LIVE)
+            add(StreamControlAction.DIAGNOSTICS)
+        }
+    }
     val watchedProgram = state.playingProgram ?: state.selectedChannel?.let { channel ->
         val start = channel.currentProgramStart
         val end = channel.currentProgramEnd
@@ -129,11 +151,43 @@ fun PlayerScreen(
         }
     }
 
-    BackHandler(enabled = state.isChannelPanelVisible) {
-        viewModel.hideChannels()
+    DisposableEffect(activePlayer) {
+        val player = activePlayer
+        val listener = object : Player.Listener {
+            override fun onTracksChanged(tracks: Tracks) {
+                currentTracks = tracks
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                playbackError = error.message
+            }
+        }
+        player?.addListener(listener)
+        currentTracks = player?.currentTracks ?: Tracks.EMPTY
+        playbackError = player?.playerError?.message
+        onDispose { player?.removeListener(listener) }
     }
-    BackHandler(enabled = state.isSettingsVisible) {
-        viewModel.hideSettings()
+
+    LaunchedEffect(exitHintVisible) {
+        if (exitHintVisible) {
+            delay(EXIT_CONFIRMATION_MS)
+            exitHintVisible = false
+        }
+    }
+
+    BackHandler {
+        when {
+            audioDialogVisible -> audioDialogVisible = false
+            diagnosticsVisible -> diagnosticsVisible = false
+            state.isSettingsVisible -> viewModel.hideSettings()
+            state.isChannelPanelVisible -> viewModel.hideChannels()
+            controlsVisible -> controlsVisible = false
+            System.currentTimeMillis() <= exitArmedUntil -> onExit()
+            else -> {
+                exitArmedUntil = System.currentTimeMillis() + EXIT_CONFIRMATION_MS
+                exitHintVisible = true
+            }
+        }
     }
 
     Box(
@@ -152,29 +206,8 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
                             if (controlsVisible) {
-                                val player = activePlayer
-                                val channel = state.selectedChannel
-                                if (
-                                    !state.isArchivePlayback &&
-                                    player != null &&
-                                    channel != null &&
-                                    watchedProgram != null
-                                ) {
-                                    val position = currentProgramPosition(
-                                        player = player,
-                                        program = watchedProgram,
-                                    )
-                                    viewModel.switchLiveToArchive(
-                                        channel = channel,
-                                        program = watchedProgram,
-                                        positionMs = (position - SEEK_STEP_MS).coerceAtLeast(0L),
-                                        shouldPlay = true,
-                                    )
-                                } else {
-                                    player?.seekTo(
-                                        (player.currentPosition - SEEK_STEP_MS).coerceAtLeast(0L),
-                                    )
-                                }
+                                focusedControlIndex =
+                                    (focusedControlIndex - 1).mod(controlActions.size)
                                 controlsInteraction = System.currentTimeMillis()
                                 true
                             } else if (state.isChannelPanelVisible) {
@@ -186,16 +219,8 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             if (controlsVisible) {
-                                activePlayer?.let { player ->
-                                    val target = player.currentPosition + SEEK_STEP_MS
-                                    player.seekTo(
-                                        if (player.duration > 0 && player.duration != C.TIME_UNSET) {
-                                            target.coerceAtMost(player.duration)
-                                        } else {
-                                            target
-                                        },
-                                    )
-                                }
+                                focusedControlIndex =
+                                    (focusedControlIndex + 1).mod(controlActions.size)
                                 controlsInteraction = System.currentTimeMillis()
                                 true
                             } else if (state.isChannelPanelVisible) {
@@ -204,33 +229,97 @@ fun PlayerScreen(
                                 true
                             }
                         }
+                        KeyEvent.KEYCODE_DPAD_UP -> {
+                            if (controlsVisible) {
+                                controlsInteraction = System.currentTimeMillis()
+                                true
+                            } else if (!state.isChannelPanelVisible) {
+                                viewModel.selectAdjacentChannel(-1)
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        KeyEvent.KEYCODE_DPAD_DOWN -> {
+                            if (controlsVisible) {
+                                controlsInteraction = System.currentTimeMillis()
+                                true
+                            } else if (!state.isChannelPanelVisible) {
+                                viewModel.selectAdjacentChannel(1)
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        KeyEvent.KEYCODE_PROG_RED -> {
+                            if (controlsVisible && state.isArchivePlayback) {
+                                viewModel.returnToLive()
+                                controlsVisible = false
+                            }
+                            true
+                        }
                         KeyEvent.KEYCODE_DPAD_CENTER,
                         KeyEvent.KEYCODE_ENTER,
                         -> {
                             if (!state.isChannelPanelVisible && state.selectedChannel != null) {
                                 if (!controlsVisible) {
                                     controlsVisible = true
+                                    focusedControlIndex = 1
                                     controlsInteraction = System.currentTimeMillis()
                                 } else {
-                                    activePlayer?.let { player ->
-                                        if (
-                                            !state.isArchivePlayback &&
-                                            watchedProgram != null
-                                        ) {
-                                            viewModel.switchLiveToArchive(
-                                                channel = state.selectedChannel!!,
-                                                program = watchedProgram,
-                                                positionMs = currentProgramPosition(
-                                                    player = player,
+                                    val player = activePlayer
+                                    when (controlActions[focusedControlIndex]) {
+                                        StreamControlAction.REWIND -> if (player != null) {
+                                            if (!state.isArchivePlayback && watchedProgram != null) {
+                                                viewModel.switchLiveToArchive(
+                                                    channel = state.selectedChannel!!,
                                                     program = watchedProgram,
-                                                ),
-                                                shouldPlay = false,
-                                            )
-                                        } else {
-                                            player.playWhenReady = !player.playWhenReady
+                                                    positionMs = (
+                                                        currentProgramPosition(player, watchedProgram) -
+                                                            SEEK_STEP_MS
+                                                        ).coerceAtLeast(0L),
+                                                    shouldPlay = true,
+                                                )
+                                            } else {
+                                                player.seekTo(
+                                                    (player.currentPosition - SEEK_STEP_MS)
+                                                        .coerceAtLeast(0L),
+                                                )
+                                            }
                                         }
-                                        controlsInteraction = System.currentTimeMillis()
+                                        StreamControlAction.PLAY_PAUSE -> if (player != null) {
+                                            if (!state.isArchivePlayback && watchedProgram != null) {
+                                                viewModel.switchLiveToArchive(
+                                                    channel = state.selectedChannel!!,
+                                                    program = watchedProgram,
+                                                    positionMs = currentProgramPosition(
+                                                        player,
+                                                        watchedProgram,
+                                                    ),
+                                                    shouldPlay = false,
+                                                )
+                                            } else {
+                                                player.playWhenReady = !player.playWhenReady
+                                            }
+                                        }
+                                        StreamControlAction.FORWARD -> player?.let {
+                                            val target = it.currentPosition + SEEK_STEP_MS
+                                            it.seekTo(
+                                                if (it.duration > 0 && it.duration != C.TIME_UNSET) {
+                                                    target.coerceAtMost(it.duration)
+                                                } else {
+                                                    target
+                                                },
+                                            )
+                                        }
+                                        StreamControlAction.AUDIO -> audioDialogVisible = true
+                                        StreamControlAction.RETURN_TO_LIVE -> {
+                                            viewModel.returnToLive()
+                                            controlsVisible = false
+                                        }
+                                        StreamControlAction.DIAGNOSTICS -> diagnosticsVisible = true
                                     }
+                                    controlsInteraction = System.currentTimeMillis()
                                 }
                                 true
                             } else {
@@ -266,7 +355,26 @@ fun PlayerScreen(
                 channel = state.selectedChannel,
                 program = watchedProgram,
                 isArchive = state.isArchivePlayback,
+                actions = controlActions,
+                focusedActionIndex = focusedControlIndex,
             )
+        }
+        if (exitHintVisible) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 44.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = Color(0xEB141B2A),
+                shadowElevation = 12.dp,
+            ) {
+                Text(
+                    "Нажмите «Назад» ещё раз, чтобы выйти",
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
+                    color = Color.White,
+                    fontSize = 15.sp,
+                )
+            }
         }
 
         AnimatedVisibility(
@@ -279,11 +387,13 @@ fun PlayerScreen(
                 selected = state.selectedChannel,
                 archiveChannel = state.archiveChannel,
                 watchedProgramStart = watchedProgram?.start,
+                favoriteChannelIds = state.favoriteChannelIds,
                 isEpgUpdating = state.isEpgUpdating,
                 onDismiss = viewModel::hideChannels,
                 onSelect = viewModel::selectChannel,
                 onOpenArchive = viewModel::openArchive,
                 onPlayProgram = viewModel::playProgram,
+                onToggleFavorite = viewModel::toggleFavorite,
                 searchPrograms = viewModel::searchPrograms,
             )
         }
@@ -299,6 +409,21 @@ fun PlayerScreen(
             onDismiss = viewModel::hideSettings,
             onSave = viewModel::saveSettings,
             onRefreshEpg = viewModel::refreshEpgNow,
+        )
+    }
+    if (audioDialogVisible) {
+        AudioTrackDialog(
+            player = activePlayer,
+            tracks = currentTracks,
+            onDismiss = { audioDialogVisible = false },
+        )
+    }
+    if (diagnosticsVisible) {
+        DiagnosticsDialog(
+            channel = state.selectedChannel,
+            tracks = currentTracks,
+            error = playbackError,
+            onDismiss = { diagnosticsVisible = false },
         )
     }
 
@@ -606,6 +731,8 @@ private fun StreamControls(
     channel: Channel?,
     program: Program?,
     isArchive: Boolean,
+    actions: List<StreamControlAction>,
+    focusedActionIndex: Int,
 ) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var playerPosition by remember { mutableLongStateOf(0L) }
@@ -722,9 +849,64 @@ private fun StreamControls(
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
                 )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    actions.forEachIndexed { index, action ->
+                        val focused = index == focusedActionIndex
+                        Text(
+                            action.controlLabel(player?.playWhenReady == false),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    when {
+                                        focused -> MaterialTheme.colorScheme.primary
+                                        action == StreamControlAction.RETURN_TO_LIVE ->
+                                            Color(0xFFE53935).copy(alpha = 0.72f)
+                                        else -> Color.White.copy(alpha = 0.08f)
+                                    },
+                                )
+                                .then(
+                                    if (focused) {
+                                        Modifier.border(
+                                            2.dp,
+                                            Color.White,
+                                            RoundedCornerShape(8.dp),
+                                        )
+                                    } else {
+                                        Modifier
+                                    },
+                                )
+                                .padding(horizontal = 10.dp, vertical = 5.dp),
+                                color = Color.White,
+                                fontSize = 11.sp,
+                        )
+                    }
+                }
             }
         }
     }
+}
+
+private enum class StreamControlAction {
+    REWIND,
+    PLAY_PAUSE,
+    FORWARD,
+    AUDIO,
+    RETURN_TO_LIVE,
+    DIAGNOSTICS,
+}
+
+private fun StreamControlAction.controlLabel(paused: Boolean): String = when (this) {
+    StreamControlAction.REWIND -> "−30 сек"
+    StreamControlAction.PLAY_PAUSE -> if (paused) "Продолжить" else "Пауза"
+    StreamControlAction.FORWARD -> "+30 сек"
+    StreamControlAction.AUDIO -> "Аудио"
+    StreamControlAction.RETURN_TO_LIVE -> "Вернуться в эфир"
+    StreamControlAction.DIAGNOSTICS -> "Диагностика"
 }
 
 private fun currentProgramPosition(player: ExoPlayer, program: Program): Long {
@@ -736,7 +918,163 @@ private fun currentProgramPosition(player: ExoPlayer, program: Program): Long {
     return (streamNow - program.start).coerceIn(0L, (program.end - program.start).coerceAtLeast(1L))
 }
 
+@Composable
+private fun AudioTrackDialog(
+    player: ExoPlayer?,
+    tracks: Tracks,
+    onDismiss: () -> Unit,
+) {
+    val options = remember(tracks) {
+        buildList {
+            tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }.forEach { group ->
+                repeat(group.length) { trackIndex ->
+                    val format = group.getTrackFormat(trackIndex)
+                    add(
+                        AudioTrackOption(
+                            group = group,
+                            trackIndex = trackIndex,
+                            title = format.label
+                                ?: format.language?.let { language ->
+                                    runCatching {
+                                        Locale.forLanguageTag(language).displayLanguage
+                                    }.getOrNull()
+                                }
+                                ?: "Аудиодорожка ${size + 1}",
+                            details = listOfNotNull(
+                                format.sampleMimeType?.substringAfter('/'),
+                                format.channelCount.takeIf { it > 0 }?.let { "$it каналов" },
+                            ).joinToString(" · "),
+                            selected = group.isTrackSelected(trackIndex),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xF21A2232),
+        shape = RoundedCornerShape(28.dp),
+        title = { Text("Аудиодорожки") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (options.isEmpty()) {
+                    Text("Дополнительные аудиодорожки не найдены")
+                }
+                options.forEach { option ->
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            player?.trackSelectionParameters = player
+                                ?.trackSelectionParameters
+                                ?.buildUpon()
+                                ?.clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                                ?.addOverride(
+                                    TrackSelectionOverride(
+                                        option.group.mediaTrackGroup,
+                                        option.trackIndex,
+                                    ),
+                                )
+                                ?.build()
+                                ?: return@TextButton
+                            onDismiss()
+                        },
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                (if (option.selected) "● " else "○ ") + option.title,
+                                color = if (option.selected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    Color.White
+                                },
+                            )
+                            if (option.details.isNotBlank()) {
+                                Text(
+                                    option.details,
+                                    color = Color.White.copy(alpha = 0.55f),
+                                    fontSize = 12.sp,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+    )
+}
+
+@Composable
+private fun DiagnosticsDialog(
+    channel: Channel?,
+    tracks: Tracks,
+    error: String?,
+    onDismiss: () -> Unit,
+) {
+    val video = tracks.groups
+        .firstOrNull { it.type == C.TRACK_TYPE_VIDEO }
+        ?.let { group ->
+            (0 until group.length).firstOrNull(group::isTrackSelected)
+                ?.let(group::getTrackFormat)
+        }
+    val audio = tracks.groups
+        .firstOrNull { it.type == C.TRACK_TYPE_AUDIO }
+        ?.let { group ->
+            (0 until group.length).firstOrNull(group::isTrackSelected)
+                ?.let(group::getTrackFormat)
+        }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xF21A2232),
+        shape = RoundedCornerShape(28.dp),
+        title = { Text("Диагностика потока") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                DiagnosticRow("Канал", channel?.name.orEmpty())
+                DiagnosticRow("URL", channel?.streamUrl.orEmpty())
+                DiagnosticRow(
+                    "Видео",
+                    listOfNotNull(video?.sampleMimeType, video?.codecs).joinToString(" · ")
+                        .ifBlank { "Не определено" },
+                )
+                DiagnosticRow(
+                    "Разрешение",
+                    video?.takeIf { it.width > 0 && it.height > 0 }
+                        ?.let { "${it.width}×${it.height}" }
+                        ?: "Не определено",
+                )
+                DiagnosticRow(
+                    "Аудио",
+                    listOfNotNull(audio?.sampleMimeType, audio?.codecs, audio?.language)
+                        .joinToString(" · ")
+                        .ifBlank { "Не определено" },
+                )
+                DiagnosticRow("Ошибка", error ?: "Нет")
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+    )
+}
+
+@Composable
+private fun DiagnosticRow(label: String, value: String) {
+    Column {
+        Text(label, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
+        Text(value, color = Color.White, fontSize = 14.sp)
+    }
+}
+
+private data class AudioTrackOption(
+    val group: Tracks.Group,
+    val trackIndex: Int,
+    val title: String,
+    val details: String,
+    val selected: Boolean,
+)
+
 private const val SEEK_STEP_MS = 30_000L
+private const val EXIT_CONFIRMATION_MS = 2_500L
 
 private fun formatDuration(milliseconds: Long): String {
     val totalSeconds = (milliseconds / 1_000).coerceAtLeast(0)
@@ -845,6 +1183,8 @@ private fun SearchDialog(
             }.distinctBy { "${it.channel.id}:${it.program?.start ?: 0L}" }.take(30)
         }
     }
+    val channelResults = results.filter { it.program == null }
+    val programResults = results.filter { it.program != null }
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Color(0xF21A2232),
@@ -865,36 +1205,25 @@ private fun SearchDialog(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
+                    if (channelResults.isNotEmpty()) {
+                        item { SearchSectionTitle("Каналы") }
+                    }
                     itemsIndexed(
-                        results,
+                        channelResults,
                         key = { _, result ->
                             "${result.channel.id}:${result.program?.start ?: 0L}"
                         },
                     ) { _, result ->
-                        TextButton(
-                            onClick = {
-                                result.program?.let {
-                                    onPlayProgram(result.channel, it)
-                                } ?: onSelectChannel(result.channel)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                Text(
-                                    result.program?.title ?: result.channel.name,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    textAlign = TextAlign.Start,
-                                    color = Color.White,
-                                )
-                                if (result.program != null) {
-                                    Text(
-                                        result.channel.name,
-                                        color = Color.White.copy(alpha = 0.55f),
-                                        fontSize = 12.sp,
-                                    )
-                                }
-                            }
-                        }
+                        SearchResultItem(result, onSelectChannel, onPlayProgram)
+                    }
+                    if (programResults.isNotEmpty()) {
+                        item { SearchSectionTitle("Передачи") }
+                    }
+                    itemsIndexed(
+                        programResults,
+                        key = { _, result -> "program:${result.channel.id}:${result.program?.start}" },
+                    ) { _, result ->
+                        SearchResultItem(result, onSelectChannel, onPlayProgram)
                     }
                 }
             }
@@ -906,22 +1235,69 @@ private fun SearchDialog(
 }
 
 @Composable
+private fun SearchSectionTitle(title: String) {
+    Text(
+        title,
+        modifier = Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp),
+        color = MaterialTheme.colorScheme.primary,
+        fontSize = 15.sp,
+    )
+}
+
+@Composable
+private fun SearchResultItem(
+    result: SearchResult,
+    onSelectChannel: (Channel) -> Unit,
+    onPlayProgram: (Channel, Program) -> Unit,
+) {
+    TextButton(
+        onClick = {
+            result.program?.let { onPlayProgram(result.channel, it) }
+                ?: onSelectChannel(result.channel)
+        },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                result.program?.title ?: result.channel.name,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Start,
+                color = Color.White,
+            )
+            result.program?.let {
+                Text(
+                    result.channel.name,
+                    color = Color.White.copy(alpha = 0.55f),
+                    fontSize = 12.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun ChannelPanel(
     channels: List<Channel>,
     selected: Channel?,
     archiveChannel: Channel?,
     watchedProgramStart: Long?,
+    favoriteChannelIds: Set<String>,
     isEpgUpdating: Boolean,
     onDismiss: () -> Unit,
     onSelect: (Channel) -> Unit,
     onOpenArchive: (Channel) -> Unit,
     onPlayProgram: (Channel, Program) -> Unit,
+    onToggleFavorite: (Channel) -> Unit,
     searchPrograms: suspend (String) -> List<ru.iptvtv.domain.model.ProgramSearchResult>,
 ) {
     var showSearch by remember { mutableStateOf(false) }
     var searchFocused by remember { mutableStateOf(false) }
-    val categories = remember(channels) {
+    val categories = remember(channels, favoriteChannelIds) {
         listOf(
+            ChannelCategory(
+                name = "Избранное",
+                channels = channels.filter { it.id in favoriteChannelIds },
+            ),
             ChannelCategory(
                 name = "Все каналы",
                 channels = channels,
@@ -932,6 +1308,7 @@ private fun ChannelPanel(
                 ChannelCategory(name = name, channels = categoryChannels)
             }
     }
+    var favoriteLongPressHandled by remember { mutableStateOf(false) }
     val initialCategoryIndex = categories.indexOfFirst {
         it.name == selected?.category
     }.coerceAtLeast(0)
@@ -1007,7 +1384,13 @@ private fun ChannelPanel(
             .clip(RoundedCornerShape(28.dp))
             .focusRequester(panelFocus)
             .onPreviewKeyEvent { event ->
-                if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) {
+                if (event.nativeKeyEvent.action == KeyEvent.ACTION_UP) {
+                    if (
+                        event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                        event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER
+                    ) {
+                        favoriteLongPressHandled = false
+                    }
                     false
                 } else {
                     when (event.nativeKeyEvent.keyCode) {
@@ -1051,6 +1434,17 @@ private fun ChannelPanel(
                         KeyEvent.KEYCODE_DPAD_CENTER,
                         KeyEvent.KEYCODE_ENTER,
                         -> {
+                            if (
+                                panelLevel == PanelLevel.CHANNELS &&
+                                event.nativeKeyEvent.repeatCount > 0
+                            ) {
+                                if (!favoriteLongPressHandled) {
+                                    visibleChannels.getOrNull(focusedChannelIndex)
+                                        ?.let(onToggleFavorite)
+                                    favoriteLongPressHandled = true
+                                }
+                                return@onPreviewKeyEvent true
+                            }
                             if (searchFocused) {
                                 showSearch = true
                             } else if (panelLevel == PanelLevel.CATEGORIES) {
@@ -1073,6 +1467,13 @@ private fun ChannelPanel(
                                         onPlayProgram(channel, program)
                                     }
                                 }
+                            }
+                            true
+                        }
+                        KeyEvent.KEYCODE_PROG_YELLOW -> {
+                            if (panelLevel == PanelLevel.CHANNELS) {
+                                visibleChannels.getOrNull(focusedChannelIndex)
+                                    ?.let(onToggleFavorite)
                             }
                             true
                         }
@@ -1115,13 +1516,7 @@ private fun ChannelPanel(
                             true
                         }
                         KeyEvent.KEYCODE_BACK -> {
-                            if (panelLevel == PanelLevel.PROGRAMS) {
-                                panelLevel = PanelLevel.CHANNELS
-                            } else if (panelLevel == PanelLevel.CHANNELS) {
-                                panelLevel = PanelLevel.CATEGORIES
-                            } else {
-                                onDismiss()
-                            }
+                            onDismiss()
                             true
                         }
                         else -> false
@@ -1183,7 +1578,7 @@ private fun ChannelPanel(
                 LazyColumn(
                     state = categoryListState,
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
                     itemsIndexed(
                         categories,
@@ -1194,6 +1589,7 @@ private fun ChannelPanel(
                             selected = index == initialCategoryIndex,
                             focused = index == focusedCategoryIndex,
                             showChevron = true,
+                            compact = true,
                         )
                     }
                 }
@@ -1215,6 +1611,7 @@ private fun ChannelPanel(
                             programEnd = channel.currentProgramEnd,
                             selected = channel.id == selected?.id,
                             focused = index == focusedChannelIndex,
+                            favorite = channel.id in favoriteChannelIds,
                         )
                     }
                 }
@@ -1226,6 +1623,7 @@ private fun ChannelPanel(
                 focusedIndex = focusedProgramIndex,
                 watchedProgramStart = watchedProgramStart,
                 selectedDayStart = selectedDayStart,
+                channelName = archiveChannel?.name.orEmpty(),
             )
             ProgramDetailsPanel(dayPrograms.getOrNull(focusedProgramIndex))
         }
@@ -1255,6 +1653,7 @@ private fun ProgramArchivePanel(
     focusedIndex: Int,
     watchedProgramStart: Long?,
     selectedDayStart: Long,
+    channelName: String,
 ) {
     val listState = rememberLazyListState()
     LaunchedEffect(focusedIndex) {
@@ -1268,7 +1667,7 @@ private fun ProgramArchivePanel(
             .padding(top = 28.dp),
     ) {
         Text(
-            "Программа и архив",
+            channelName.ifBlank { "Архив" },
             modifier = Modifier.padding(horizontal = 24.dp),
             fontSize = 22.sp,
         )
@@ -1463,6 +1862,8 @@ private fun PanelListItem(
     selected: Boolean,
     focused: Boolean,
     showChevron: Boolean = false,
+    compact: Boolean = false,
+    favorite: Boolean = false,
 ) {
     val shape = RoundedCornerShape(18.dp)
     val background = when {
@@ -1474,7 +1875,13 @@ private fun PanelListItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(if (subtitle == null) 68.dp else 84.dp)
+            .height(
+                when {
+                    compact -> 54.dp
+                    subtitle == null -> 68.dp
+                    else -> 84.dp
+                },
+            )
             .clip(shape)
             .background(background)
             .then(
@@ -1520,6 +1927,14 @@ private fun PanelListItem(
         if (showChevron) {
             Spacer(Modifier.width(10.dp))
             Text("›", color = MaterialTheme.colorScheme.primary, fontSize = 22.sp)
+        }
+        if (favorite) {
+            Icon(
+                imageVector = Icons.Rounded.Star,
+                contentDescription = "В избранном",
+                modifier = Modifier.size(20.dp),
+                tint = Color(0xFFFFC107),
+            )
         }
     }
 }

@@ -6,6 +6,7 @@ import ru.iptvtv.domain.model.Program
 
 data class PlayerUiState(
     val channels: List<Channel> = emptyList(),
+    val favoriteChannelIds: Set<String> = emptySet(),
     val selectedChannel: Channel? = null,
     val archiveChannel: Channel? = null,
     val playingProgram: Program? = null,

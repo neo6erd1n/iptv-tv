@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
                 PlayerScreen(
                     viewModel = playerViewModel,
                     onDownloadUpdate = updateDownloader::download,
+                    onExit = ::finish,
                 )
             }
         }
@@ -91,6 +92,7 @@ private class PlayerViewModelFactory(
                 GitHubUpdateRepository(BuildConfig.GITHUB_REPOSITORY),
             ),
             currentVersion = BuildConfig.VERSION_NAME,
+            settingsRepository = settingsRepository,
         ) as T
     }
 }
