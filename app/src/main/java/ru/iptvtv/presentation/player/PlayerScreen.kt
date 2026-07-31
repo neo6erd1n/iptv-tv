@@ -1346,6 +1346,7 @@ private fun ChannelPanel(
             }
     }
     var favoriteLongPressHandled by remember { mutableStateOf(false) }
+    var channelPressStarted by remember { mutableStateOf(false) }
     val initialCategoryIndex = categories.indexOfFirst {
         it.name == selected?.category
     }.coerceAtLeast(0)
@@ -1428,11 +1429,13 @@ private fun ChannelPanel(
                     ) {
                         if (
                             panelLevel == PanelLevel.CHANNELS &&
+                            channelPressStarted &&
                             !favoriteLongPressHandled
                         ) {
                             visibleChannels.getOrNull(focusedChannelIndex)?.let(onSelect)
                         }
                         favoriteLongPressHandled = false
+                        channelPressStarted = false
                         return@onPreviewKeyEvent panelLevel == PanelLevel.CHANNELS
                     }
                     false
@@ -1480,6 +1483,13 @@ private fun ChannelPanel(
                         -> {
                             if (
                                 panelLevel == PanelLevel.CHANNELS &&
+                                event.nativeKeyEvent.repeatCount == 0
+                            ) {
+                                channelPressStarted = true
+                                return@onPreviewKeyEvent true
+                            }
+                            if (
+                                panelLevel == PanelLevel.CHANNELS &&
                                 event.nativeKeyEvent.repeatCount > 0
                             ) {
                                 if (!favoriteLongPressHandled) {
@@ -1487,9 +1497,6 @@ private fun ChannelPanel(
                                         ?.let(onToggleFavorite)
                                     favoriteLongPressHandled = true
                                 }
-                                return@onPreviewKeyEvent true
-                            }
-                            if (panelLevel == PanelLevel.CHANNELS) {
                                 return@onPreviewKeyEvent true
                             }
                             if (searchFocused) {
