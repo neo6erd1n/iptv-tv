@@ -123,6 +123,7 @@ fun PlayerScreen(
     var diagnosticsVisible by remember { mutableStateOf(false) }
     var currentTracks by remember { mutableStateOf(Tracks.EMPTY) }
     var playbackError by remember { mutableStateOf<String?>(null) }
+    var displayedArchivePlayback by remember { mutableStateOf(false) }
     var focusedControlIndex by remember { mutableIntStateOf(0) }
     var controlBarFocused by remember { mutableStateOf(false) }
     val controlActions = remember(state.isArchivePlayback) {
@@ -149,7 +150,7 @@ fun PlayerScreen(
         }
     }
 
-    DisposableEffect(activePlayer) {
+    DisposableEffect(activePlayer, state.playbackRequestId, state.isArchivePlayback) {
         val player = activePlayer
         val listener = object : Player.Listener {
             override fun onTracksChanged(tracks: Tracks) {
@@ -158,6 +159,10 @@ fun PlayerScreen(
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 playbackError = error.message
+            }
+
+            override fun onRenderedFirstFrame() {
+                displayedArchivePlayback = state.isArchivePlayback
             }
         }
         player?.addListener(listener)
@@ -214,6 +219,7 @@ fun PlayerScreen(
                                         player != null &&
                                         watchedProgram != null
                                     ) {
+                                        player.pause()
                                         viewModel.switchLiveToArchive(
                                             channel = state.selectedChannel!!,
                                             program = watchedProgram,
@@ -309,6 +315,7 @@ fun PlayerScreen(
                                 } else if (!controlBarFocused) {
                                     activePlayer?.let { player ->
                                             if (!state.isArchivePlayback && watchedProgram != null) {
+                                                player.pause()
                                                 viewModel.switchLiveToArchive(
                                                     channel = state.selectedChannel!!,
                                                     program = watchedProgram,
@@ -327,6 +334,7 @@ fun PlayerScreen(
                                     when (controlActions[focusedControlIndex]) {
                                         StreamControlAction.AUDIO -> audioDialogVisible = true
                                         StreamControlAction.RETURN_TO_LIVE -> {
+                                            activePlayer?.pause()
                                             viewModel.returnToLive()
                                             controlsVisible = false
                                         }
@@ -367,7 +375,7 @@ fun PlayerScreen(
                 player = activePlayer,
                 channel = state.selectedChannel,
                 program = watchedProgram,
-                isArchive = state.isArchivePlayback,
+                isArchive = displayedArchivePlayback,
                 actions = controlActions,
                 focusedActionIndex = focusedControlIndex.takeIf { controlBarFocused },
             )
@@ -711,6 +719,7 @@ private fun VideoPlayer(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
                 useController = false
+                setKeepContentOnPlayerReset(true)
                 resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                 this.player = player
             }
@@ -1155,14 +1164,14 @@ private fun SearchDialog(
     onPlayProgram: (Channel, Program) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
-    val normalizedQuery = query.trim()
+    var submittedQuery by remember { mutableStateOf("") }
+    val normalizedQuery = submittedQuery.trim()
     val epgResults by produceState(
         initialValue = emptyList<ru.iptvtv.domain.model.ProgramSearchResult>(),
         normalizedQuery,
     ) {
         value = emptyList()
         if (normalizedQuery.length >= 2) {
-            delay(250)
             value = runCatching { searchPrograms(normalizedQuery) }.getOrDefault(emptyList())
         }
     }
@@ -1207,14 +1216,26 @@ private fun SearchDialog(
         title = { Text("Поиск каналов и передач") },
         text = {
             Column(modifier = Modifier.height(480.dp)) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Название") },
-                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("Название") },
+                        leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Button(
+                        onClick = { submittedQuery = query.trim() },
+                        enabled = query.trim().length >= 2,
+                    ) {
+                        Text("Поиск")
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth(),
@@ -1404,7 +1425,14 @@ private fun ChannelPanel(
                         event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
                         event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER
                     ) {
+                        if (
+                            panelLevel == PanelLevel.CHANNELS &&
+                            !favoriteLongPressHandled
+                        ) {
+                            visibleChannels.getOrNull(focusedChannelIndex)?.let(onSelect)
+                        }
                         favoriteLongPressHandled = false
+                        return@onPreviewKeyEvent panelLevel == PanelLevel.CHANNELS
                     }
                     false
                 } else {
@@ -1460,6 +1488,9 @@ private fun ChannelPanel(
                                 }
                                 return@onPreviewKeyEvent true
                             }
+                            if (panelLevel == PanelLevel.CHANNELS) {
+                                return@onPreviewKeyEvent true
+                            }
                             if (searchFocused) {
                                 showSearch = true
                             } else if (panelLevel == PanelLevel.CATEGORIES) {
@@ -1470,12 +1501,6 @@ private fun ChannelPanel(
                                     .indexOfFirst { it.id == selected?.id }
                                     .coerceAtLeast(0)
                                 panelLevel = PanelLevel.CHANNELS
-                            } else if (panelLevel == PanelLevel.CHANNELS) {
-                                visibleChannels
-                                    .getOrNull(focusedChannelIndex)
-                                    ?.let { channel ->
-                                        onSelect(channel)
-                                    }
                             } else {
                                 archiveChannel?.let { channel ->
                                     dayPrograms.getOrNull(focusedProgramIndex)?.let { program ->
@@ -1626,7 +1651,9 @@ private fun ChannelPanel(
                             programEnd = channel.currentProgramEnd,
                             selected = channel.id == selected?.id,
                             focused = index == focusedChannelIndex,
-                            favorite = channel.id in favoriteChannelIds,
+                            favorite =
+                                channel.id in favoriteChannelIds &&
+                                    categories[activeCategoryIndex].name != "Избранное",
                         )
                     }
                 }
