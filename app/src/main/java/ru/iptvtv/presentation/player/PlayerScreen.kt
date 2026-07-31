@@ -150,7 +150,12 @@ fun PlayerScreen(
         }
     }
 
-    DisposableEffect(activePlayer, state.playbackRequestId, state.isArchivePlayback) {
+    DisposableEffect(
+        activePlayer,
+        state.playbackRequestId,
+        state.isArchivePlayback,
+        state.isLiveTimeshift,
+    ) {
         val player = activePlayer
         val listener = object : Player.Listener {
             override fun onTracksChanged(tracks: Tracks) {
@@ -163,6 +168,12 @@ fun PlayerScreen(
 
             override fun onRenderedFirstFrame() {
                 displayedArchivePlayback = state.isArchivePlayback
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED && state.isLiveTimeshift) {
+                    viewModel.returnToLive()
+                }
             }
         }
         player?.addListener(listener)
