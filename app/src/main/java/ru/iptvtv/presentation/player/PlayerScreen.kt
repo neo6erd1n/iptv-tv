@@ -123,14 +123,12 @@ fun PlayerScreen(
     var diagnosticsVisible by remember { mutableStateOf(false) }
     var currentTracks by remember { mutableStateOf(Tracks.EMPTY) }
     var playbackError by remember { mutableStateOf<String?>(null) }
-    var focusedControlIndex by remember { mutableIntStateOf(1) }
+    var focusedControlIndex by remember { mutableIntStateOf(0) }
+    var controlBarFocused by remember { mutableStateOf(false) }
     val controlActions = remember(state.isArchivePlayback) {
         buildList {
-            add(StreamControlAction.REWIND)
-            add(StreamControlAction.PLAY_PAUSE)
-            add(StreamControlAction.FORWARD)
-            add(StreamControlAction.AUDIO)
             if (state.isArchivePlayback) add(StreamControlAction.RETURN_TO_LIVE)
+            add(StreamControlAction.AUDIO)
             add(StreamControlAction.DIAGNOSTICS)
         }
     }
@@ -206,8 +204,32 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
                             if (controlsVisible) {
-                                focusedControlIndex =
-                                    (focusedControlIndex - 1).mod(controlActions.size)
+                                if (controlBarFocused) {
+                                    focusedControlIndex =
+                                        (focusedControlIndex - 1).mod(controlActions.size)
+                                } else {
+                                    val player = activePlayer
+                                    if (
+                                        !state.isArchivePlayback &&
+                                        player != null &&
+                                        watchedProgram != null
+                                    ) {
+                                        viewModel.switchLiveToArchive(
+                                            channel = state.selectedChannel!!,
+                                            program = watchedProgram,
+                                            positionMs = (
+                                                currentProgramPosition(player, watchedProgram) -
+                                                    SEEK_STEP_MS
+                                                ).coerceAtLeast(0L),
+                                            shouldPlay = true,
+                                        )
+                                    } else {
+                                        player?.seekTo(
+                                            (player.currentPosition - SEEK_STEP_MS)
+                                                .coerceAtLeast(0L),
+                                        )
+                                    }
+                                }
                                 controlsInteraction = System.currentTimeMillis()
                                 true
                             } else if (state.isChannelPanelVisible) {
@@ -219,8 +241,21 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             if (controlsVisible) {
-                                focusedControlIndex =
-                                    (focusedControlIndex + 1).mod(controlActions.size)
+                                if (controlBarFocused) {
+                                    focusedControlIndex =
+                                        (focusedControlIndex + 1).mod(controlActions.size)
+                                } else {
+                                    activePlayer?.let { player ->
+                                        val target = player.currentPosition + SEEK_STEP_MS
+                                        player.seekTo(
+                                            if (player.duration > 0 && player.duration != C.TIME_UNSET) {
+                                                target.coerceAtMost(player.duration)
+                                            } else {
+                                                target
+                                            },
+                                        )
+                                    }
+                                }
                                 controlsInteraction = System.currentTimeMillis()
                                 true
                             } else if (state.isChannelPanelVisible) {
@@ -231,6 +266,7 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_UP -> {
                             if (controlsVisible) {
+                                controlBarFocused = false
                                 controlsInteraction = System.currentTimeMillis()
                                 true
                             } else if (!state.isChannelPanelVisible) {
@@ -242,6 +278,9 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_DOWN -> {
                             if (controlsVisible) {
+                                controlBarFocused = true
+                                focusedControlIndex = focusedControlIndex
+                                    .coerceIn(0, controlActions.lastIndex)
                                 controlsInteraction = System.currentTimeMillis()
                                 true
                             } else if (!state.isChannelPanelVisible) {
@@ -264,30 +303,11 @@ fun PlayerScreen(
                             if (!state.isChannelPanelVisible && state.selectedChannel != null) {
                                 if (!controlsVisible) {
                                     controlsVisible = true
-                                    focusedControlIndex = 1
+                                    controlBarFocused = false
+                                    focusedControlIndex = 0
                                     controlsInteraction = System.currentTimeMillis()
-                                } else {
-                                    val player = activePlayer
-                                    when (controlActions[focusedControlIndex]) {
-                                        StreamControlAction.REWIND -> if (player != null) {
-                                            if (!state.isArchivePlayback && watchedProgram != null) {
-                                                viewModel.switchLiveToArchive(
-                                                    channel = state.selectedChannel!!,
-                                                    program = watchedProgram,
-                                                    positionMs = (
-                                                        currentProgramPosition(player, watchedProgram) -
-                                                            SEEK_STEP_MS
-                                                        ).coerceAtLeast(0L),
-                                                    shouldPlay = true,
-                                                )
-                                            } else {
-                                                player.seekTo(
-                                                    (player.currentPosition - SEEK_STEP_MS)
-                                                        .coerceAtLeast(0L),
-                                                )
-                                            }
-                                        }
-                                        StreamControlAction.PLAY_PAUSE -> if (player != null) {
+                                } else if (!controlBarFocused) {
+                                    activePlayer?.let { player ->
                                             if (!state.isArchivePlayback && watchedProgram != null) {
                                                 viewModel.switchLiveToArchive(
                                                     channel = state.selectedChannel!!,
@@ -301,17 +321,10 @@ fun PlayerScreen(
                                             } else {
                                                 player.playWhenReady = !player.playWhenReady
                                             }
-                                        }
-                                        StreamControlAction.FORWARD -> player?.let {
-                                            val target = it.currentPosition + SEEK_STEP_MS
-                                            it.seekTo(
-                                                if (it.duration > 0 && it.duration != C.TIME_UNSET) {
-                                                    target.coerceAtMost(it.duration)
-                                                } else {
-                                                    target
-                                                },
-                                            )
-                                        }
+                                    }
+                                    controlsInteraction = System.currentTimeMillis()
+                                } else {
+                                    when (controlActions[focusedControlIndex]) {
                                         StreamControlAction.AUDIO -> audioDialogVisible = true
                                         StreamControlAction.RETURN_TO_LIVE -> {
                                             viewModel.returnToLive()
@@ -356,7 +369,7 @@ fun PlayerScreen(
                 program = watchedProgram,
                 isArchive = state.isArchivePlayback,
                 actions = controlActions,
-                focusedActionIndex = focusedControlIndex,
+                focusedActionIndex = focusedControlIndex.takeIf { controlBarFocused },
             )
         }
         if (exitHintVisible) {
@@ -732,7 +745,7 @@ private fun StreamControls(
     program: Program?,
     isArchive: Boolean,
     actions: List<StreamControlAction>,
-    focusedActionIndex: Int,
+    focusedActionIndex: Int?,
 ) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var playerPosition by remember { mutableLongStateOf(0L) }
@@ -850,6 +863,14 @@ private fun StreamControls(
                     textAlign = TextAlign.Center,
                 )
                 Spacer(Modifier.height(8.dp))
+                Text(
+                    "← назад 30 сек    ОК пауза / продолжить    вперёд 30 сек →    ↓ действия",
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 11.sp,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(8.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
@@ -858,7 +879,7 @@ private fun StreamControls(
                     actions.forEachIndexed { index, action ->
                         val focused = index == focusedActionIndex
                         Text(
-                            action.controlLabel(player?.playWhenReady == false),
+                            action.controlLabel(),
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(
@@ -892,18 +913,12 @@ private fun StreamControls(
 }
 
 private enum class StreamControlAction {
-    REWIND,
-    PLAY_PAUSE,
-    FORWARD,
     AUDIO,
     RETURN_TO_LIVE,
     DIAGNOSTICS,
 }
 
-private fun StreamControlAction.controlLabel(paused: Boolean): String = when (this) {
-    StreamControlAction.REWIND -> "−30 сек"
-    StreamControlAction.PLAY_PAUSE -> if (paused) "Продолжить" else "Пауза"
-    StreamControlAction.FORWARD -> "+30 сек"
+private fun StreamControlAction.controlLabel(): String = when (this) {
     StreamControlAction.AUDIO -> "Аудио"
     StreamControlAction.RETURN_TO_LIVE -> "Вернуться в эфир"
     StreamControlAction.DIAGNOSTICS -> "Диагностика"
