@@ -680,11 +680,8 @@ private fun VideoPlayer(
             val item = MediaItem.Builder()
                 .setUri(channel.streamUrl)
                 .build()
-            player.setMediaItem(item)
+            player.setMediaItem(item, startPositionMs.coerceAtLeast(0L))
             player.prepare()
-            if (startPositionMs > 0L) {
-                player.seekTo(startPositionMs)
-            }
             player.playWhenReady = shouldPlay
         }
     }

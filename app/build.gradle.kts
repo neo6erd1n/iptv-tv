@@ -14,8 +14,8 @@ android {
         applicationId = "ru.iptvtv"
         minSdk = 23
         targetSdk = 36
-        versionCode = 23
-        versionName = "0.23.0"
+        versionCode = 24
+        versionName = "0.24.0"
 
         buildConfigField(
             "String",
