@@ -39,6 +39,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material.icons.rounded.PauseCircle
+import androidx.compose.material.icons.rounded.PlayCircle
+import androidx.compose.material.icons.rounded.FastForward
+import androidx.compose.material.icons.rounded.FastRewind
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Sync
@@ -110,6 +113,15 @@ fun PlayerScreen(
     var activePlayer by remember { mutableStateOf<ExoPlayer?>(null) }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsInteraction by remember { mutableLongStateOf(0L) }
+    val watchedProgram = state.playingProgram ?: state.selectedChannel?.let { channel ->
+        val start = channel.currentProgramStart
+        val end = channel.currentProgramEnd
+        if (start != null && end != null && channel.currentProgram != null) {
+            Program(channel.currentProgram, "", start, end)
+        } else {
+            null
+        }
+    }
 
     LaunchedEffect(controlsInteraction, controlsVisible) {
         if (controlsVisible) {
@@ -141,8 +153,28 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
                             if (controlsVisible) {
-                                activePlayer?.let {
-                                    it.seekTo((it.currentPosition - 10_000).coerceAtLeast(0))
+                                val player = activePlayer
+                                val channel = state.selectedChannel
+                                if (
+                                    !state.isArchivePlayback &&
+                                    player != null &&
+                                    channel != null &&
+                                    watchedProgram != null
+                                ) {
+                                    val position = currentProgramPosition(
+                                        player = player,
+                                        program = watchedProgram,
+                                    )
+                                    viewModel.switchLiveToArchive(
+                                        channel = channel,
+                                        program = watchedProgram,
+                                        positionMs = (position - SEEK_STEP_MS).coerceAtLeast(0L),
+                                        shouldPlay = true,
+                                    )
+                                } else {
+                                    player?.seekTo(
+                                        (player.currentPosition - SEEK_STEP_MS).coerceAtLeast(0L),
+                                    )
                                 }
                                 controlsInteraction = System.currentTimeMillis()
                                 true
@@ -155,11 +187,11 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             if (controlsVisible) {
-                                activePlayer?.let {
-                                    val target = it.currentPosition + 10_000
-                                    it.seekTo(
-                                        if (it.duration > 0 && it.duration != C.TIME_UNSET) {
-                                            target.coerceAtMost(it.duration)
+                                activePlayer?.let { player ->
+                                    val target = player.currentPosition + SEEK_STEP_MS
+                                    player.seekTo(
+                                        if (player.duration > 0 && player.duration != C.TIME_UNSET) {
+                                            target.coerceAtMost(player.duration)
                                         } else {
                                             target
                                         },
@@ -177,10 +209,29 @@ fun PlayerScreen(
                         KeyEvent.KEYCODE_ENTER,
                         -> {
                             if (!state.isChannelPanelVisible && state.selectedChannel != null) {
-                                activePlayer?.let { player ->
-                                    player.playWhenReady = !player.playWhenReady
+                                if (!controlsVisible) {
                                     controlsVisible = true
                                     controlsInteraction = System.currentTimeMillis()
+                                } else {
+                                    activePlayer?.let { player ->
+                                        if (
+                                            !state.isArchivePlayback &&
+                                            watchedProgram != null
+                                        ) {
+                                            viewModel.switchLiveToArchive(
+                                                channel = state.selectedChannel!!,
+                                                program = watchedProgram,
+                                                positionMs = currentProgramPosition(
+                                                    player = player,
+                                                    program = watchedProgram,
+                                                ),
+                                                shouldPlay = false,
+                                            )
+                                        } else {
+                                            player.playWhenReady = !player.playWhenReady
+                                        }
+                                        controlsInteraction = System.currentTimeMillis()
+                                    }
                                 }
                                 true
                             } else {
@@ -195,6 +246,9 @@ fun PlayerScreen(
         state.selectedChannel?.let { channel ->
             VideoPlayer(
                 channel = channel,
+                startPositionMs = state.playbackStartPositionMs,
+                shouldPlay = state.playbackShouldPlay,
+                requestId = state.playbackRequestId,
                 onPlayerChanged = { activePlayer = it },
             )
         } ?: EmptyPlayerState(
@@ -211,7 +265,8 @@ fun PlayerScreen(
             StreamControls(
                 player = activePlayer,
                 channel = state.selectedChannel,
-                program = state.playingProgram,
+                program = watchedProgram,
+                isArchive = state.isArchivePlayback,
             )
         }
 
@@ -223,6 +278,7 @@ fun PlayerScreen(
             ChannelPanel(
                 channels = state.channels,
                 selected = state.selectedChannel,
+                watchedProgramStart = watchedProgram?.start,
                 isEpgUpdating = state.isEpgUpdating,
                 onDismiss = viewModel::hideChannels,
                 onSelect = viewModel::selectChannel,
@@ -451,6 +507,9 @@ private fun SettingsDialog(
 @Composable
 private fun VideoPlayer(
     channel: Channel,
+    startPositionMs: Long,
+    shouldPlay: Boolean,
+    requestId: Long,
     onPlayerChanged: (ExoPlayer?) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -468,13 +527,17 @@ private fun VideoPlayer(
         onPlayerChanged(player)
     }
 
-    LaunchedEffect(channel.streamUrl) {
+    LaunchedEffect(channel.streamUrl, requestId) {
         runCatching {
             val item = MediaItem.Builder()
                 .setUri(channel.streamUrl)
                 .build()
             player.setMediaItem(item)
             player.prepare()
+            if (startPositionMs > 0L) {
+                player.seekTo(startPositionMs)
+            }
+            player.playWhenReady = shouldPlay
         }
     }
 
@@ -540,6 +603,7 @@ private fun StreamControls(
     player: ExoPlayer?,
     channel: Channel?,
     program: Program?,
+    isArchive: Boolean,
 ) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var playerPosition by remember { mutableLongStateOf(0L) }
@@ -585,50 +649,100 @@ private fun StreamControls(
                 tint = Color.White.copy(alpha = 0.9f),
             )
         }
-        Column(
+        Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .padding(start = 56.dp, end = 56.dp, bottom = 38.dp)
                 .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.72f))
-                .padding(horizontal = 48.dp, vertical = 22.dp),
+                .clip(RoundedCornerShape(24.dp)),
+            color = Color(0xE6141B2A),
+            shadowElevation = 18.dp,
         ) {
-            Text(
-                program?.title ?: channel?.currentProgram.orEmpty(),
-                color = Color.White,
-                fontSize = 15.sp,
-                maxLines = 1,
-            )
-            Spacer(Modifier.height(10.dp))
-            BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(12.dp),
-            ) {
-                LinearProgressIndicator(
-                    progress = { progress },
+            Column(modifier = Modifier.padding(horizontal = 28.dp, vertical = 20.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (isArchive) "АРХИВ" else "ЭФИР",
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFFE53935))
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        color = Color.White,
+                        fontSize = 12.sp,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        program?.title ?: channel?.currentProgram.orEmpty(),
+                        modifier = Modifier.weight(1f),
+                        color = Color.White,
+                        fontSize = 17.sp,
+                        maxLines = 1,
+                    )
+                    Icon(
+                        imageVector = Icons.Rounded.FastRewind,
+                        contentDescription = "Назад на 30 секунд",
+                        tint = Color.White.copy(alpha = 0.82f),
+                    )
+                    Spacer(Modifier.width(18.dp))
+                    Icon(
+                        imageVector = if (player?.playWhenReady == false) {
+                            Icons.Rounded.PlayCircle
+                        } else {
+                            Icons.Rounded.PauseCircle
+                        },
+                        contentDescription = "Пауза или воспроизведение",
+                        modifier = Modifier.size(34.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(18.dp))
+                    Icon(
+                        imageVector = Icons.Rounded.FastForward,
+                        contentDescription = "Вперёд на 30 секунд",
+                        tint = Color.White.copy(alpha = 0.82f),
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+                BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(4.dp)
-                        .align(Alignment.Center),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = Color.White.copy(alpha = 0.24f),
-                )
-                Box(
-                    modifier = Modifier
-                        .offset(x = (maxWidth - 12.dp) * progress)
-                        .size(12.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(Color.White),
-                )
-            }
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Text(formatDuration(position), fontSize = 12.sp)
-                Spacer(Modifier.weight(1f))
-                Text(formatDuration(duration), fontSize = 12.sp)
+                        .height(14.dp),
+                ) {
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp)
+                            .align(Alignment.Center),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = Color.White.copy(alpha = 0.24f),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .offset(x = (maxWidth - 14.dp) * progress)
+                            .size(14.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(Color.White),
+                    )
+                }
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Text(formatDuration(position), color = Color.White, fontSize = 12.sp)
+                    Spacer(Modifier.weight(1f))
+                    Text(formatDuration(duration), color = Color.White, fontSize = 12.sp)
+                }
             }
         }
     }
 }
+
+private fun currentProgramPosition(player: ExoPlayer, program: Program): Long {
+    val streamNow = if (player.currentLiveOffset != C.TIME_UNSET && player.currentLiveOffset >= 0) {
+        System.currentTimeMillis() - player.currentLiveOffset
+    } else {
+        System.currentTimeMillis()
+    }
+    return (streamNow - program.start).coerceIn(0L, (program.end - program.start).coerceAtLeast(1L))
+}
+
+private const val SEEK_STEP_MS = 30_000L
 
 private fun formatDuration(milliseconds: Long): String {
     val totalSeconds = (milliseconds / 1_000).coerceAtLeast(0)
@@ -646,6 +760,7 @@ private fun formatDuration(milliseconds: Long): String {
 private fun ChannelPanel(
     channels: List<Channel>,
     selected: Channel?,
+    watchedProgramStart: Long?,
     isEpgUpdating: Boolean,
     onDismiss: () -> Unit,
     onSelect: (Channel) -> Unit,
@@ -948,6 +1063,7 @@ private fun ChannelPanel(
             ProgramArchivePanel(
                 programs = programs,
                 focusedIndex = focusedProgramIndex,
+                watchedProgramStart = watchedProgramStart,
             )
             ProgramDetailsPanel(programs.getOrNull(focusedProgramIndex))
         }
@@ -959,6 +1075,7 @@ private fun ChannelPanel(
 private fun ProgramArchivePanel(
     programs: List<Program>,
     focusedIndex: Int,
+    watchedProgramStart: Long?,
 ) {
     val listState = rememberLazyListState()
     LaunchedEffect(focusedIndex) {
@@ -999,6 +1116,7 @@ private fun ProgramArchivePanel(
                     ProgramArchiveItem(
                         program = program,
                         focused = index == focusedIndex,
+                        watched = program.start == watchedProgramStart,
                     )
                 }
             }
@@ -1007,7 +1125,7 @@ private fun ProgramArchivePanel(
 }
 
 @Composable
-private fun ProgramArchiveItem(program: Program, focused: Boolean) {
+private fun ProgramArchiveItem(program: Program, focused: Boolean, watched: Boolean) {
     val now = System.currentTimeMillis()
     val isLive = now in program.start until program.end
     val shape = RoundedCornerShape(16.dp)
@@ -1016,9 +1134,21 @@ private fun ProgramArchiveItem(program: Program, focused: Boolean) {
             .fillMaxWidth()
             .height(52.dp)
             .clip(shape)
-            .background(if (focused) Color.White.copy(alpha = 0.18f) else Color.Transparent)
+            .background(
+                when {
+                    focused -> Color.White.copy(alpha = 0.18f)
+                    watched -> MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                    else -> Color.Transparent
+                },
+            )
             .then(
-                if (focused) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape)
+                if (focused || watched) {
+                    Modifier.border(
+                        if (focused) 2.dp else 1.dp,
+                        MaterialTheme.colorScheme.primary,
+                        shape,
+                    )
+                }
                 else Modifier,
             )
             .padding(horizontal = 12.dp),
@@ -1041,6 +1171,15 @@ private fun ProgramArchiveItem(program: Program, focused: Boolean) {
                 "ЭФИР",
                 color = Color(0xFFFF5252),
                 fontSize = 12.sp,
+            )
+            Spacer(Modifier.width(8.dp))
+        }
+        if (watched && !isLive) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.primary),
             )
             Spacer(Modifier.width(8.dp))
         }

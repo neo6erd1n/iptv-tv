@@ -73,7 +73,14 @@ class PlayerViewModel(
 
     fun selectChannel(channel: Channel) {
         _uiState.update {
-            it.copy(selectedChannel = channel, playingProgram = null)
+            it.copy(
+                selectedChannel = channel,
+                playingProgram = null,
+                isArchivePlayback = false,
+                playbackStartPositionMs = 0L,
+                playbackShouldPlay = true,
+                playbackRequestId = System.currentTimeMillis(),
+            )
         }
         val epgUrl = _uiState.value.epgUrl
         if (epgUrl.isNotBlank()) {
@@ -110,6 +117,36 @@ class PlayerViewModel(
                     catchupType = liveChannel.catchupType,
                 ),
                 playingProgram = program,
+                isArchivePlayback = playbackUrl != liveChannel.streamUrl,
+                playbackStartPositionMs = 0L,
+                playbackShouldPlay = true,
+                playbackRequestId = System.currentTimeMillis(),
+            )
+        }
+    }
+
+    fun switchLiveToArchive(
+        channel: Channel,
+        program: Program,
+        positionMs: Long,
+        shouldPlay: Boolean,
+    ) {
+        val liveChannel = _uiState.value.channels
+            .firstOrNull { it.id == channel.id }
+            ?: channel
+        val archiveUrl = buildCatchupUrl(liveChannel, program) ?: return
+        _uiState.update {
+            it.copy(
+                selectedChannel = channel.copy(
+                    streamUrl = archiveUrl,
+                    catchupSource = liveChannel.catchupSource,
+                    catchupType = liveChannel.catchupType,
+                ),
+                playingProgram = program,
+                isArchivePlayback = true,
+                playbackStartPositionMs = positionMs.coerceAtLeast(0L),
+                playbackShouldPlay = shouldPlay,
+                playbackRequestId = System.currentTimeMillis(),
             )
         }
     }
