@@ -800,13 +800,62 @@ private fun StreamControls(
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(start = 56.dp, end = 56.dp, bottom = 38.dp)
+                .padding(start = 56.dp, end = 56.dp, bottom = 12.dp)
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(24.dp)),
             color = Color(0xE6141B2A),
             shadowElevation = 18.dp,
         ) {
-            Column(modifier = Modifier.padding(horizontal = 28.dp, vertical = 20.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    actions.forEachIndexed { index, action ->
+                        val focused = index == focusedActionIndex
+                        Text(
+                            action.controlLabel(),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    when {
+                                        focused -> MaterialTheme.colorScheme.primary
+                                        action == StreamControlAction.RETURN_TO_LIVE ->
+                                            Color(0xFFE53935).copy(alpha = 0.72f)
+                                        else -> Color.White.copy(alpha = 0.08f)
+                                    },
+                                )
+                                .then(
+                                    if (focused) {
+                                        Modifier.border(
+                                            2.dp,
+                                            Color.White,
+                                            RoundedCornerShape(8.dp),
+                                        )
+                                    } else {
+                                        Modifier
+                                    },
+                                )
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                            color = Color.White,
+                            fontSize = 11.sp,
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        if (isArchive) "АРХИВ" else "ЭФИР",
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (isArchive) Color(0xFFFFC107) else Color(0xFFE53935),
+                            )
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                        color = if (isArchive) Color(0xFF241A00) else Color.White,
+                        fontSize = 12.sp,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     channel?.logoUrl?.takeIf(String::isNotBlank)?.let {
                         ChannelLogo(it)
@@ -826,19 +875,8 @@ private fun StreamControls(
                             maxLines = 1,
                         )
                     }
-                    Text(
-                        if (isArchive) "АРХИВ" else "ЭФИР",
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(
-                                if (isArchive) Color(0xFFFFC107) else Color(0xFFE53935),
-                            )
-                            .padding(horizontal = 10.dp, vertical = 5.dp),
-                        color = if (isArchive) Color(0xFF241A00) else Color.White,
-                        fontSize = 12.sp,
-                    )
                 }
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(8.dp))
                 BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -868,51 +906,6 @@ private fun StreamControls(
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
                 )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "← назад 30 сек    ОК пауза / продолжить    вперёд 30 сек →    ↓ действия",
-                    modifier = Modifier.fillMaxWidth(),
-                    color = Color.White.copy(alpha = 0.5f),
-                    fontSize = 11.sp,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    actions.forEachIndexed { index, action ->
-                        val focused = index == focusedActionIndex
-                        Text(
-                            action.controlLabel(),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(
-                                    when {
-                                        focused -> MaterialTheme.colorScheme.primary
-                                        action == StreamControlAction.RETURN_TO_LIVE ->
-                                            Color(0xFFE53935).copy(alpha = 0.72f)
-                                        else -> Color.White.copy(alpha = 0.08f)
-                                    },
-                                )
-                                .then(
-                                    if (focused) {
-                                        Modifier.border(
-                                            2.dp,
-                                            Color.White,
-                                            RoundedCornerShape(8.dp),
-                                        )
-                                    } else {
-                                        Modifier
-                                    },
-                                )
-                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                                color = Color.White,
-                                fontSize = 11.sp,
-                        )
-                    }
-                }
             }
         }
     }
@@ -1943,12 +1936,24 @@ private fun PanelListItem(
         ChannelLogo(logoUrl)
         if (logoUrl.isNotBlank()) Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                name,
-                color = Color.White,
-                fontSize = 17.sp,
-                maxLines = 1,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    name,
+                    modifier = Modifier.weight(1f),
+                    color = Color.White,
+                    fontSize = 17.sp,
+                    maxLines = 1,
+                )
+                if (favorite) {
+                    Spacer(Modifier.width(8.dp))
+                    Icon(
+                        imageVector = Icons.Rounded.Star,
+                        contentDescription = "В избранном",
+                        modifier = Modifier.size(20.dp),
+                        tint = Color(0xFFFFC107),
+                    )
+                }
+            }
             subtitle?.takeIf(String::isNotBlank)?.let {
                 Spacer(Modifier.height(3.dp))
                 Text(
@@ -1966,14 +1971,6 @@ private fun PanelListItem(
         if (showChevron) {
             Spacer(Modifier.width(10.dp))
             Text("›", color = MaterialTheme.colorScheme.primary, fontSize = 22.sp)
-        }
-        if (favorite) {
-            Icon(
-                imageVector = Icons.Rounded.Star,
-                contentDescription = "В избранном",
-                modifier = Modifier.size(20.dp),
-                tint = Color(0xFFFFC107),
-            )
         }
     }
 }
