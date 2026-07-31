@@ -89,6 +89,7 @@ import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -145,7 +146,7 @@ fun PlayerScreen(
 
     LaunchedEffect(controlsInteraction, controlsVisible) {
         if (controlsVisible) {
-            delay(3_000)
+            delay(5_000)
             controlsVisible = false
         }
     }
@@ -679,6 +680,7 @@ private fun VideoPlayer(
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
         ExoPlayer.Builder(context, renderersFactory).build().apply {
             playWhenReady = true
+            setSeekParameters(SeekParameters.EXACT)
         }
     }
 
@@ -818,13 +820,28 @@ private fun StreamControls(
             shadowElevation = 18.dp,
         ) {
             Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    channel?.logoUrl?.takeIf(String::isNotBlank)?.let {
+                        ChannelLogo(it)
+                        Spacer(Modifier.width(12.dp))
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            channel?.name.orEmpty(),
+                            color = Color.White,
+                            fontSize = 18.sp,
+                            maxLines = 1,
+                        )
+                        Text(
+                            program?.title ?: channel?.currentProgram.orEmpty(),
+                            color = Color.White.copy(alpha = 0.68f),
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                        )
+                    }
                     actions.forEachIndexed { index, action ->
                         val focused = index == focusedActionIndex
+                        Spacer(Modifier.width(8.dp))
                         Text(
                             action.controlLabel(),
                             modifier = Modifier
@@ -853,7 +870,7 @@ private fun StreamControls(
                             fontSize = 11.sp,
                         )
                     }
-                    Spacer(Modifier.weight(1f))
+                    Spacer(Modifier.width(10.dp))
                     Text(
                         if (isArchive) "АРХИВ" else "ЭФИР",
                         modifier = Modifier
@@ -865,27 +882,6 @@ private fun StreamControls(
                         color = if (isArchive) Color(0xFF241A00) else Color.White,
                         fontSize = 12.sp,
                     )
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    channel?.logoUrl?.takeIf(String::isNotBlank)?.let {
-                        ChannelLogo(it)
-                        Spacer(Modifier.width(12.dp))
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            channel?.name.orEmpty(),
-                            color = Color.White,
-                            fontSize = 18.sp,
-                            maxLines = 1,
-                        )
-                        Text(
-                            program?.title ?: channel?.currentProgram.orEmpty(),
-                            color = Color.White.copy(alpha = 0.68f),
-                            fontSize = 14.sp,
-                            maxLines = 1,
-                        )
-                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 BoxWithConstraints(
