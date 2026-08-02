@@ -720,21 +720,36 @@ private fun VideoPlayer(
         }
     }
 
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = {
-            PlayerView(it).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
-                useController = false
-                setKeepContentOnPlayerReset(true)
-                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                this.player = player
-            }
-        },
-    )
+    Box(Modifier.fillMaxSize()) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = {
+                PlayerView(it).apply {
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                    useController = false
+                    setKeepContentOnPlayerReset(true)
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    this.player = player
+                }
+            },
+        )
+
+        // The Hi3751V350 HEVC overlay exposes the 16 alignment rows below the
+        // 3840x2160 crop for this stream. Cover only that device-specific edge;
+        // changing renderer or surface type makes 4K playback less reliable.
+        if (channel.name.equals("BCU Kids 4K", ignoreCase = true)) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(12.dp)
+                    .background(Color.Black),
+            )
+        }
+    }
 }
 
 @Composable
