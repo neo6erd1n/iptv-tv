@@ -87,6 +87,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.C
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.Tracks
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -169,6 +170,12 @@ fun PlayerScreen(
 
             override fun onRenderedFirstFrame() {
                 displayedArchivePlayback = state.isArchivePlayback
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED && state.isLiveTimeshift) {
+                    viewModel.refreshLiveTimeshift(player?.currentPosition ?: 0L)
+                }
             }
         }
         player?.addListener(listener)
@@ -331,8 +338,12 @@ fun PlayerScreen(
                                                     ),
                                                     shouldPlay = false,
                                                 )
+                                            } else if (player.playWhenReady) {
+                                                player.pause()
+                                            } else if (state.isLiveTimeshift) {
+                                                viewModel.refreshLiveTimeshift(player.currentPosition)
                                             } else {
-                                                player.playWhenReady = !player.playWhenReady
+                                                player.play()
                                             }
                                     }
                                     controlsInteraction = System.currentTimeMillis()
@@ -811,11 +822,12 @@ private fun StreamControls(
     val position = when {
         isArchive -> playerPosition
         start != null -> {
-            val streamNow = if (liveOffset != C.TIME_UNSET && liveOffset >= 0) {
-                now - liveOffset
-            } else {
-                now
-            }
+            val streamNow = player?.let(::currentPlaybackTimeMs)
+                ?: if (liveOffset != C.TIME_UNSET && liveOffset >= 0) {
+                    now - liveOffset
+                } else {
+                    now
+                }
             streamNow - start
         }
         else -> playerPosition
@@ -955,12 +967,25 @@ private fun StreamControlAction.controlLabel(): String = when (this) {
 }
 
 private fun currentProgramPosition(player: ExoPlayer, program: Program): Long {
-    val streamNow = if (player.currentLiveOffset != C.TIME_UNSET && player.currentLiveOffset >= 0) {
+    val streamNow = currentPlaybackTimeMs(player)
+    return (streamNow - program.start).coerceIn(0L, (program.end - program.start).coerceAtLeast(1L))
+}
+
+private fun currentPlaybackTimeMs(player: ExoPlayer): Long {
+    if (!player.currentTimeline.isEmpty) {
+        val window = player.currentTimeline.getWindow(
+            player.currentMediaItemIndex,
+            Timeline.Window(),
+        )
+        if (window.windowStartTimeMs != C.TIME_UNSET) {
+            return window.windowStartTimeMs + player.currentPosition
+        }
+    }
+    return if (player.currentLiveOffset != C.TIME_UNSET && player.currentLiveOffset >= 0) {
         System.currentTimeMillis() - player.currentLiveOffset
     } else {
         System.currentTimeMillis()
     }
-    return (streamNow - program.start).coerceIn(0L, (program.end - program.start).coerceAtLeast(1L))
 }
 
 @Composable

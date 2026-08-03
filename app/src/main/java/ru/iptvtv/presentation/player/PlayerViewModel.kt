@@ -85,6 +85,7 @@ class PlayerViewModel(
                 selectedChannel = channel,
                 playingProgram = null,
                 isArchivePlayback = false,
+                isLiveTimeshift = false,
                 playbackStartPositionMs = 0L,
                 playbackShouldPlay = true,
                 playbackRequestId = System.currentTimeMillis(),
@@ -173,6 +174,7 @@ class PlayerViewModel(
                 ),
                 playingProgram = program,
                 isArchivePlayback = playbackUrl != liveChannel.streamUrl,
+                isLiveTimeshift = false,
                 playbackStartPositionMs = 0L,
                 playbackShouldPlay = true,
                 playbackRequestId = System.currentTimeMillis(),
@@ -199,11 +201,20 @@ class PlayerViewModel(
                 ),
                 playingProgram = program,
                 isArchivePlayback = true,
+                isLiveTimeshift = true,
                 playbackStartPositionMs = positionMs.coerceAtLeast(0L),
                 playbackShouldPlay = shouldPlay,
                 playbackRequestId = System.currentTimeMillis(),
             )
         }
+    }
+
+    fun refreshLiveTimeshift(positionMs: Long) {
+        val state = _uiState.value
+        if (!state.isLiveTimeshift) return
+        val channel = state.selectedChannel ?: return
+        val program = state.playingProgram ?: return
+        switchLiveToArchive(channel, program, positionMs, shouldPlay = true)
     }
 
     private fun buildCatchupUrl(channel: Channel, program: Program): String? {
