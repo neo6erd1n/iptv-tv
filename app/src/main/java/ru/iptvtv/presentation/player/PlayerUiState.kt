@@ -11,7 +11,6 @@ data class PlayerUiState(
     val archiveChannel: Channel? = null,
     val playingProgram: Program? = null,
     val isArchivePlayback: Boolean = false,
-    val isLiveTimeshift: Boolean = false,
     val playbackStartPositionMs: Long = 0L,
     val playbackShouldPlay: Boolean = true,
     val playbackRequestId: Long = 0L,

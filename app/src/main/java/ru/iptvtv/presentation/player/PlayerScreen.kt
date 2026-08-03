@@ -89,9 +89,10 @@ import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.TrackSelectionOverride
-import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import ru.iptvtv.domain.model.AppUpdate
@@ -155,7 +156,6 @@ fun PlayerScreen(
         activePlayer,
         state.playbackRequestId,
         state.isArchivePlayback,
-        state.isLiveTimeshift,
     ) {
         val player = activePlayer
         val listener = object : Player.Listener {
@@ -169,12 +169,6 @@ fun PlayerScreen(
 
             override fun onRenderedFirstFrame() {
                 displayedArchivePlayback = state.isArchivePlayback
-            }
-
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED && state.isLiveTimeshift) {
-                    viewModel.returnToLive()
-                }
             }
         }
         player?.addListener(listener)
@@ -678,7 +672,22 @@ private fun VideoPlayer(
         val renderersFactory = DefaultRenderersFactory(context)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-        ExoPlayer.Builder(context, renderersFactory).build().apply {
+        val loadControl = DefaultLoadControl.Builder()
+            // The projector gives the app a 128 MB heap. A 4K HLS stream can make
+            // Media3's default 50-second buffer consume almost all of it.
+            .setBufferDurationsMs(
+                1_500,
+                8_000,
+                500,
+                1_000,
+            )
+            .setTargetBufferBytes(24 * 1024 * 1024)
+            .setPrioritizeTimeOverSizeThresholds(false)
+            .build()
+        ExoPlayer.Builder(context, renderersFactory)
+            .setLoadControl(loadControl)
+            .build()
+            .apply {
             playWhenReady = true
             setSeekParameters(SeekParameters.EXACT)
         }
